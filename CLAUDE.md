@@ -26,9 +26,11 @@ An MCP server is a Node process and **cannot write browser IndexedDB/localStorag
 directly** — that storage is sandboxed to the page origin. Therefore the bridge is always:
 
 ```
-MCP (Node) → local HTTP route (Next server) → staged scene file on disk
-           → client poller inside the page hydrates it into IndexedDB
-             using the app's EXISTING save path → editor opens it
+MCP (Node) → local HTTP route (Next server) → staged command file on disk
+           → poller inside Home (page.tsx) calls the EXISTING updateProjectShapes()
+             handler (writes IndexedDB + localStorage + a winning project revision)
+           → the editor's initialShapes/projectRevision props change → its existing
+             rehydration effect (~line 4354) re-renders the scene
 ```
 
 Never attempt to have the Node side write the scene store. If a design idea requires that,
@@ -40,9 +42,12 @@ it is wrong — re-read this section.
 
 - A cutter is an ordinary shape with `hole: true`.
 - A boolean/combined result carries its parts in `groupedShapes: WorkplaneShape[]`.
-- Valid `ShapeKind` values and sane parameter ranges live in
-  `apps/web/src/lib/shapeCatalog.ts` and `apps/web/src/lib/workplaneShapes.ts`.
-  Read these before generating any shapes.
+- The `ShapeKind` union (18 kinds) is the validation source of truth — wider than the
+  toolbar catalog (11). `shapeCatalog.ts` / `workplaneShapes.ts` hold per-kind **defaults +
+  canonicalisation**, NOT ranges. Do not hand-author ranges: import and reuse
+  `canonicalizeShape` + the per-kind defaults as the validator (the monorepo makes this a
+  direct import). Some kinds need extra data (`text` → text/font, `mesh` → importedMesh);
+  the *generatable* subset is smaller than the union and is model guidance, not the enum.
 
 Claude's job is emitting **valid `WorkplaneShape[]` JSON**. Manifold WASM (client-side)
 does the actual CSG/meshing. Do **not** do mesh maths on the server.
@@ -54,9 +59,12 @@ does the actual CSG/meshing. Do **not** do mesh maths on the server.
 - **Reuse, don't reimplement.**
   - Copy the `isLocalSameOriginRequest` guard from an existing route
     (`apps/web/src/app/api/local-download/route.ts`) into the new route.
-  - Reuse the existing IndexedDB read/write helpers and the localStorage project helpers
-    in `page.tsx`. A project needs BOTH a localStorage metadata entry AND an IndexedDB
-    shapes record to open — keep them consistent.
+  - The IndexedDB/localStorage helpers in `page.tsx` (`saveProjectShapes`, etc.) are
+    **module-private** — do not import them. Drive persistence through the editor's
+    existing `onProjectShapesChange` handler, `updateProjectShapes` (in `Home`), which
+    already writes IndexedDB + localStorage + a winning revision in one place. The bridge
+    never calls `saveProjectShapes` or sets a project revision itself — `saveProjectShapes`
+    silently drops any revision not greater than the current one.
 - **Pin upstream.** This is an alpha repo; internal shapes churn. Forked from upstream
   commit: `<FILL IN>`. Do not chase `main`.
 - **Keep transport swappable.** Put the scene-delivery mechanism behind a small
@@ -66,7 +74,9 @@ does the actual CSG/meshing. Do **not** do mesh maths on the server.
 ## Where new things go
 
 - Bridge route: `apps/web/src/app/api/scene/route.ts`
-- Client hydrator/poller: new module under `apps/web/src/components/`, wired into editor mount
+- Client poller: a hook called from `Home` in `apps/web/src/app/page.tsx` (it needs
+  `updateProjectShapes` + project state). NOT a new `components/` module — those can't
+  reach the private helpers, and `Home` is where project lifecycle lives.
 - MCP server: `apps/mcp/` (new workspace; imports `WorkplaneShape` from `apps/web/src/types`)
 - Staged scenes: `.codex/pending-scenes/<projectId>.json` (mirror the existing `.codex/` convention)
 

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "sketchforge-scene-bridge": {
+      "command": "npm",
+      "args": ["run", "start", "--silent", "--prefix", "apps/mcp"],
+      "env": {
+        "SKETCHFORGE_BASE_URL": "http://127.0.0.1:3000"
+      }
+    }
+  }
+}

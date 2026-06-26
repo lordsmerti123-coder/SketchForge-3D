@@ -6,6 +6,7 @@ import { SketchForgeEditor, importedShapeFromStl } from "@/components/SketchForg
 import { createLocalId } from "@/lib/localIds";
 import { importExtensionSupported } from "@/lib/stlImport";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
+import { createPollingSceneTransport, resolveSceneBridgeTarget, type StagedSceneCommand } from "@/lib/sceneBridge";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 type AppView = "dashboard" | "editor";
@@ -236,6 +237,62 @@ function newProject(name: string, index: number, shapeCount = 0): DashboardProje
 
 function projectNameFromFileName(fileName: string) {
   return fileName.replace(/\.[^.]+$/, "").trim() || "Imported STL design";
+}
+
+const SCENE_BRIDGE_POLL_MS = 1000;
+
+// Scene bridge poller. Lives in Home (not a components/ module) because applying a
+// staged command needs the project lifecycle + updateProjectShapes that live here.
+// V2 will swap createPollingSceneTransport for a WebSocket transport without touching
+// this hook's apply path. Defers while a pointer is down so an incoming push never
+// fights an in-progress drag.
+function useSceneBridge({ ready, apply }: { ready: boolean; apply: (command: StagedSceneCommand) => void }) {
+  const applyRef = useRef(apply);
+  applyRef.current = apply;
+  const lastAppliedRef = useRef(0);
+  const pointerDownRef = useRef(false);
+
+  useEffect(() => {
+    if (!ready || typeof window === "undefined") return;
+    const envEnabled = process.env.NEXT_PUBLIC_SCENE_BRIDGE === "true";
+    const { enabled, projectId } = resolveSceneBridgeTarget(window.location.search, envEnabled);
+    if (!enabled || !projectId) return;
+
+    const transport = createPollingSceneTransport(projectId);
+    let active = true;
+
+    const onPointerDown = () => {
+      pointerDownRef.current = true;
+    };
+    const onPointerUp = () => {
+      pointerDownRef.current = false;
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("pointerup", onPointerUp, true);
+    window.addEventListener("pointercancel", onPointerUp, true);
+
+    const tick = async () => {
+      if (!active || pointerDownRef.current) return;
+      try {
+        const command = await transport.poll(lastAppliedRef.current);
+        if (!active || !command || command.stagingRevision <= lastAppliedRef.current) return;
+        lastAppliedRef.current = command.stagingRevision;
+        applyRef.current(command);
+      } catch {
+        // Transient (server reload, file mid-write). The command stays staged; retry next tick.
+      }
+    };
+
+    void tick();
+    const interval = window.setInterval(() => void tick(), SCENE_BRIDGE_POLL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("pointerup", onPointerUp, true);
+      window.removeEventListener("pointercancel", onPointerUp, true);
+    };
+  }, [ready]);
 }
 
 export default function Home() {
@@ -497,6 +554,37 @@ export default function Home() {
       ),
     );
   }, []);
+
+  const applyBridgeCommand = useCallback(
+    (command: StagedSceneCommand) => {
+      if (command.op !== "upsertScene") return;
+      const projectId = command.projectId;
+      const name = command.name?.trim();
+      // Create the localStorage metadata entry if the id is unknown — the editor needs
+      // BOTH a project entry and a shapes record to open. Never overwrite an existing name.
+      setProjects((current) => {
+        if (current.some((project) => project.id === projectId)) return current;
+        const created: DashboardProject = { ...newProject(name || "AI scene", current.length), id: projectId };
+        return [created, ...current];
+      });
+      // Existing save path: writes IndexedDB + localStorage + a winning project revision.
+      // The editor's rehydration effect (keyed on initialShapes/projectRevision) re-renders.
+      updateProjectShapes({ projectId, shapes: command.shapes });
+      setActiveProjectId(projectId);
+      setEditorStarted(true);
+      setView("editor");
+      if (typeof window !== "undefined") {
+        const params = new URLSearchParams(window.location.search);
+        params.set("editor", "1");
+        params.set("project", projectId);
+        if (!params.has("bridge")) params.set("bridge", "1");
+        window.history.replaceState(null, "", `/?${params.toString()}`);
+      }
+    },
+    [updateProjectShapes],
+  );
+
+  useSceneBridge({ ready: mounted, apply: applyBridgeCommand });
 
   const createAndOpenProject = (name?: string) => {
     const project = newProject(name ?? `Untitled design ${projects.length + 1}`, projects.length);
