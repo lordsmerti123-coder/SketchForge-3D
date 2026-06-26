@@ -41,7 +41,6 @@ No login. No server project storage. No heavyweight CAD install just to make a u
 - **Boolean Intersection** - keep only the geometry where selected solid and hole shapes overlap.
 - **STL import** - bring outside models into the same workspace as primitives.
 - **STL and OBJ export** - export selected objects or the whole scene.
-- **AI scene bridge (MCP)** - drive the editor from Claude: an MCP server pushes parametric scenes into the live workplane. See [AI Scene Bridge (MCP)](#ai-scene-bridge-mcp).
 - **Fast browser stack** - Next.js, React, TypeScript, Three.js, and Manifold/CSG geometry tooling.
 
 ## Demo
@@ -163,59 +162,17 @@ npm run export
 
 Build with static export mode enabled.
 
-## AI Scene Bridge (MCP)
-
-This fork adds an **AI scene bridge** so an MCP server (driven by Claude) can push parametric 3D scenes straight into the running editor. Claude emits `WorkplaneShape` JSON; the editor renders it with the same Manifold/CSG pipeline used for hand-built shapes. Geometry stays client-side — the bridge only stages a command on disk that an in-page poller applies through the editor's existing save path, so the Node side never touches your browser project storage.
-
-### Enable bridge mode
-
-Start the app (`npm run dev`), then open the editor with the `bridge` flag and any project id:
-
-```text
-http://127.0.0.1:3000/?bridge=1&project=my-first-scene
-```
-
-The project id does not need to exist yet — the first scene push creates and opens it. Reloading keeps the scene (it lives in browser storage), and an incoming push is deferred while you are dragging a shape.
-
-### Connect the MCP server
-
-The MCP server lives in [`apps/mcp/`](apps/mcp) and is registered for Claude Code in [`.mcp.json`](.mcp.json). Install its dependencies once, then restart Claude Code so it picks up the `sketchforge-scene-bridge` server and approve it when prompted:
-
-```bash
-npm install --prefix apps/mcp
-```
-
-It talks to the running app at `SKETCHFORGE_BASE_URL` (default `http://127.0.0.1:3000`). To run it standalone for an MCP inspector:
-
-```bash
-npm run start --prefix apps/mcp
-```
-
-### Tools
-
-| Tool | Purpose |
-| --- | --- |
-| `list_kinds` | List shape kinds, default sizes, and example scenes. Call this first. |
-| `set_scene` | Replace a project's scene (unknown ids are created automatically). |
-| `add_shapes` | Append shapes to the current scene. |
-| `get_scene` | Read the current scene back to iterate on it. |
-
-With the app open in bridge mode, ask Claude for something like *"a 40 mm phone stand with a cable slot"* and the shapes appear in the workplane within a second; follow up with *"make the cable slot 5 mm wider"* to iterate. The full data contract, architecture, and design notes are in [`docs/scene-bridge/README.md`](docs/scene-bridge/README.md).
-
 ## Project Layout
 
 ```text
 apps/web/                   Next.js app workspace
 apps/web/src/app/           App routes, dashboard, API routes, styles
-apps/web/src/app/api/scene/ AI scene bridge route (stages MCP scene commands)
 apps/web/src/components/    Editor, viewport, sidebar, icons, controls
 apps/web/src/types/         Shared shape and editor types
 apps/web/src/generated/     Generated Manifold runtime source
-apps/web/src/lib/           Shared utilities (incl. sceneBridge transport)
+apps/web/src/lib/           Shared utilities
 apps/web/public/assets/     Static app images, icons, logos, shape assets
-apps/mcp/                   MCP server for the AI scene bridge
 docs/media/                 README screenshots and demo videos
-docs/scene-bridge/          AI scene bridge plan, notes, and usage docs
 deploy/docker/              Docker, Compose, and Nginx deployment files
 .github/                    Issue templates and community files
 ```

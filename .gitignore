@@ -41,6 +41,3 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
-
-# Claude Code local settings (machine-specific)
-.claude/settings.local.json
