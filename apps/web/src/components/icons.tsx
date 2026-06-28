@@ -148,6 +148,37 @@ export function ToolbarMirrorIcon() {
   return <ToolbarCommandImage file="toolbar-mirror.png" className="toolbar-user-art-icon" />;
 }
 
+export function ToolbarChamferIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 48 48" aria-hidden="true" {...props}>
+      <path d="M12 17 18 11h18v18l-7 7H12Z" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round" />
+      <path d="m12 17 7 7h17M19 24v12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round" />
+      <path d="m12 17 6-6" fill="none" stroke="currentColor" strokeWidth="4.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function ToolbarFilletIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 48 48" aria-hidden="true" {...props}>
+      <path d="M12 17c0-3.3 2.7-6 6-6h18v18c0 3.9-3.1 7-7 7H12Z" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round" />
+      <path d="m12 17 7 7h17M19 24v12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round" />
+      <path d="M12 17c0-3.3 2.7-6 6-6" fill="none" stroke="currentColor" strokeWidth="4.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function ToolbarPreserveEdgeIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 48 48" aria-hidden="true" {...props}>
+      <path d="M10 35V17c0-4 3-7 7-7h18" fill="none" stroke="currentColor" strokeWidth="2.7" strokeLinecap="round" />
+      <path d="M10 35h25V10" fill="none" stroke="currentColor" strokeWidth="2.7" strokeLinejoin="round" />
+      <path d="M17 29h13M17 25v8M30 25v8" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+      <path d="M18 17a7 7 0 0 1 7-7" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function ToolbarSnapGridIcon() {
   return <ToolbarCommandImage file="toolbar-snap-grid.png" className="toolbar-user-art-icon" />;
 }

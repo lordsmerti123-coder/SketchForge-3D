@@ -56,6 +56,70 @@ export type AlignHandleStatus = {
   title: string;
 };
 
+export type SketchPoint = {
+  id: string;
+  x: number;
+  z: number;
+  handleIn?: { x: number; z: number };
+  handleOut?: { x: number; z: number };
+  mode?: "corner" | "smooth" | "split";
+};
+
+export type SketchSegment = {
+  id: string;
+  startId: string;
+  endId: string;
+  kind?: "line" | "bezier" | "smooth";
+};
+
+export type SketchImage = {
+  id: string;
+  name: string;
+  dataUrl: string;
+  mimeType: string;
+  pixelWidth: number;
+  pixelHeight: number;
+  x: number;
+  z: number;
+  width: number;
+  depth: number;
+  opacity?: number;
+  lockAspect?: boolean;
+};
+
+export type SketchProfile = {
+  points: SketchPoint[];
+  segments: SketchSegment[];
+  images?: SketchImage[];
+};
+
+export type EdgeTreatmentFeature = {
+  kind: "fillet" | "chamfer";
+  amount: number;
+  edgeCount: number;
+  chamferAngle?: number;
+};
+
+export type EdgeTreatmentHistoryEntry = {
+  id: string;
+  createdAt: number;
+  feature: EdgeTreatmentFeature;
+  before: WorkplaneShape;
+};
+
+export type CadDisplayEdge = {
+  points: number[];
+};
+
+export type CadBrepFrame = {
+  x: number;
+  z: number;
+  elevation: number;
+  width: number;
+  depth: number;
+  height: number;
+};
+
 export type WorkplaneShape = {
   id: string;
   name: string;
@@ -99,6 +163,14 @@ export type WorkplaneShape = {
     pixelWidth: number;
     pixelHeight: number;
   };
+  sketchProfile?: SketchProfile;
+  edgeTreatments?: EdgeTreatmentFeature[];
+  edgeTreatmentHistory?: EdgeTreatmentHistoryEntry[];
+  cadDisplayEdges?: CadDisplayEdge[];
+  cadDisplayEdgesVersion?: 2;
+  edgeResizeMode?: "scale" | "preserve";
+  cadBrep?: string;
+  cadBrepFrame?: CadBrepFrame;
   groupedShapes?: WorkplaneShape[];
   groupedBaseWidth?: number;
   groupedBaseDepth?: number;

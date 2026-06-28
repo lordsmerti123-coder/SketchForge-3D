@@ -9,6 +9,9 @@ import {
   mirrorSign,
   normalizeDegrees,
   proportionalResizeScale,
+  preservesEdgeTreatmentSize,
+  resizedImportedCoordinates,
+  resizedImportedMeshPositions,
   resizedShapeSize,
   serializeShapesForSync,
   shapeDepth,
@@ -109,5 +112,35 @@ describe("workplane shape helpers", () => {
     expect(mirroredAxisCount(shape({ mirrorX: true, mirrorY: true }))).toBe(2);
     expect(fallbackSolidColor(shape({ kind: "sphere" }))).toBe("#0098c7");
     expect(fallbackSolidColor(shape({ kind: "box" }))).toBe("#d41721");
+  });
+
+  it("can resize the body while preserving fillet and chamfer boundary distances", () => {
+    const modified = shape({
+      kind: "mesh",
+      width: 40,
+      depth: 20,
+      height: 40,
+      edgeResizeMode: "preserve",
+      edgeTreatments: [{ kind: "fillet", amount: 1, edgeCount: 1 }],
+      importedMesh: {
+        positions: [-10, 0, 0, -9, 1, 0, 0, 10, 0, 9, 19, 0, 10, 20, 0],
+        baseWidth: 20,
+        baseDepth: 20,
+        baseHeight: 20,
+        triangleCount: 1,
+        sourceFormat: "json",
+      },
+    });
+
+    expect(preservesEdgeTreatmentSize(modified)).toBe(true);
+    expect(resizedImportedMeshPositions(modified)).toEqual([
+      -20, 0, 0,
+      -19, 1, 0,
+      0, 20, 0,
+      19, 39, 0,
+      20, 40, 0,
+    ]);
+    expect(resizedImportedMeshPositions({ ...modified, edgeResizeMode: "scale" })[3]).toBe(-18);
+    expect(resizedImportedCoordinates(modified, [-9, 1, 0, 9, 19, 0])).toEqual([-19, 1, 0, 19, 39, 0]);
   });
 });

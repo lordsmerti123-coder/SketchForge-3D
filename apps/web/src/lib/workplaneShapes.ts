@@ -29,6 +29,54 @@ export function shapeDepth(shape: WorkplaneShape) {
   return shape.depth ?? shape.size;
 }
 
+export function preservesEdgeTreatmentSize(shape: WorkplaneShape) {
+  return shape.edgeResizeMode === "preserve" && Boolean(shape.importedMesh && shape.edgeTreatments?.length);
+}
+
+function edgePreservedCoordinate(value: number, baseSize: number, targetSize: number, centered: boolean, requestedZone: number) {
+  const oldMin = centered ? -baseSize / 2 : 0;
+  const oldMax = oldMin + baseSize;
+  const newMin = centered ? -targetSize / 2 : 0;
+  const zone = Math.max(0, Math.min(requestedZone, baseSize / 2, targetSize / 2));
+  if (zone <= 1e-6 || Math.abs(baseSize - targetSize) <= 1e-9) {
+    return newMin + (value - oldMin) * targetSize / Math.max(0.001, baseSize);
+  }
+  const distanceFromMin = value - oldMin;
+  const distanceFromMax = oldMax - value;
+  if (distanceFromMin <= zone) return newMin + distanceFromMin;
+  if (distanceFromMax <= zone) return newMin + targetSize - distanceFromMax;
+  const oldInterior = Math.max(1e-6, baseSize - zone * 2);
+  const newInterior = Math.max(0, targetSize - zone * 2);
+  return newMin + zone + (distanceFromMin - zone) * newInterior / oldInterior;
+}
+
+export function resizedImportedCoordinates(shape: WorkplaneShape, sourcePositions: number[]) {
+  const mesh = shape.importedMesh;
+  if (!mesh) return [];
+  const width = shapeWidth(shape);
+  const depth = shapeDepth(shape);
+  const height = shape.height;
+  const preserve = preservesEdgeTreatmentSize(shape);
+  const zone = preserve ? Math.max(...(shape.edgeTreatments ?? []).map((feature) => feature.amount), 0) : 0;
+  const positions = new Array<number>(sourcePositions.length);
+  for (let index = 0; index + 2 < sourcePositions.length; index += 3) {
+    if (preserve) {
+      positions[index] = edgePreservedCoordinate(sourcePositions[index], mesh.baseWidth, width, true, zone);
+      positions[index + 1] = edgePreservedCoordinate(sourcePositions[index + 1], mesh.baseHeight, height, false, zone);
+      positions[index + 2] = edgePreservedCoordinate(sourcePositions[index + 2], mesh.baseDepth, depth, true, zone);
+    } else {
+      positions[index] = sourcePositions[index] * width / Math.max(0.001, mesh.baseWidth);
+      positions[index + 1] = sourcePositions[index + 1] * height / Math.max(0.001, mesh.baseHeight);
+      positions[index + 2] = sourcePositions[index + 2] * depth / Math.max(0.001, mesh.baseDepth);
+    }
+  }
+  return positions;
+}
+
+export function resizedImportedMeshPositions(shape: WorkplaneShape) {
+  return shape.importedMesh ? resizedImportedCoordinates(shape, shape.importedMesh.positions) : [];
+}
+
 export function resizedShapeSize(width: number, depth: number) {
   return Math.max(width, depth);
 }
@@ -71,6 +119,12 @@ export function canonicalizeShape(shape: WorkplaneShape): WorkplaneShape {
   if (shape.groupedShapes) {
     next.groupedShapes = shape.groupedShapes.map(canonicalizeShape);
   }
+  if (shape.edgeTreatmentHistory) {
+    next.edgeTreatmentHistory = shape.edgeTreatmentHistory.map((entry) => ({
+      ...entry,
+      before: canonicalizeShape(entry.before),
+    }));
+  }
   return next;
 }
 
@@ -105,6 +159,14 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.font === b.font &&
     a.importedMesh === b.importedMesh &&
     a.imagePlate === b.imagePlate &&
+    a.sketchProfile === b.sketchProfile &&
+    a.edgeTreatments === b.edgeTreatments &&
+    a.edgeTreatmentHistory === b.edgeTreatmentHistory &&
+    a.cadDisplayEdges === b.cadDisplayEdges &&
+    a.cadDisplayEdgesVersion === b.cadDisplayEdgesVersion &&
+    a.edgeResizeMode === b.edgeResizeMode &&
+    a.cadBrep === b.cadBrep &&
+    a.cadBrepFrame === b.cadBrepFrame &&
     a.groupedShapes === b.groupedShapes &&
     a.groupedBaseWidth === b.groupedBaseWidth &&
     a.groupedBaseDepth === b.groupedBaseDepth &&

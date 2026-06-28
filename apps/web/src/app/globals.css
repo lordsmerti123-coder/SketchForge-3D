@@ -19,6 +19,8 @@
   --workplane-soft: rgba(154, 220, 240, 0.28);
   --shadow: 0 2px 6px rgba(35, 55, 75, 0.12);
   --font-ui: "Avenir Next", Avenir, "Helvetica Neue", Arial, sans-serif;
+  --editor-toolbar-height: 108px;
+  --editor-toolbar-tools-height: 76px;
 }
 
 * {
@@ -732,8 +734,8 @@ button {
 }
 
 .editor-home-control svg {
-  width: 25px;
-  height: 25px;
+  width: 43px;
+  height: 43px;
 }
 
 .dashboard-settings-panel {
@@ -964,17 +966,396 @@ button {
   position: fixed;
   inset: 0 0 auto 0;
   z-index: 19;
-  display: flex;
-  align-items: stretch;
-  height: 76px;
-  background: linear-gradient(180deg, #fbfcfd 0%, #f4f7f9 54%, #edf2f5 100%);
+  height: var(--editor-toolbar-height);
+  overflow: visible;
+  background: #f4f7f9;
   border-bottom: 1px solid #d2dce5;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92), 0 1px 2px rgba(32, 54, 72, 0.06);
 }
 
+.edge-modifier-panel {
+  position: fixed;
+  top: calc(var(--editor-toolbar-height) + 14px);
+  right: 14px;
+  z-index: 46;
+  width: min(340px, calc(100vw - 28px));
+  padding: 14px;
+  color: #274158;
+  background: rgba(250, 252, 254, 0.98);
+  border: 1px solid #c8d6e1;
+  border-radius: 12px;
+  box-shadow: 0 14px 38px rgba(30, 55, 74, 0.2);
+  backdrop-filter: blur(12px);
+}
+
+.edge-modifier-header,
+.edge-modifier-value-row,
+.edge-modifier-quick-actions,
+.edge-modifier-footer,
+.edge-modifier-check {
+  display: flex;
+  align-items: center;
+}
+
+.edge-modifier-header {
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid #dce5ec;
+}
+
+.edge-modifier-header strong,
+.edge-modifier-header span {
+  display: block;
+}
+
+.edge-modifier-header strong {
+  font-size: 16px;
+}
+
+.edge-modifier-header span {
+  margin-top: 2px;
+  color: #6b7f90;
+  font-size: 11px;
+}
+
+.edge-modifier-header button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  color: #526b7e;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.edge-modifier-header button:hover {
+  background: #e8eff4;
+}
+
+.edge-modifier-target {
+  display: grid;
+  gap: 2px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  color: #536b7e;
+  background: #eef3f7;
+  border: 1px solid #d8e3eb;
+  border-radius: 7px;
+}
+
+.edge-modifier-target.grouped {
+  color: #17688a;
+  background: #eaf7fb;
+  border-color: #b8ddea;
+}
+
+.edge-modifier-target strong {
+  font-size: 12px;
+}
+
+.edge-modifier-target span {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.edge-modifier-selection-help {
+  margin: 11px 0 8px;
+  color: #607486;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.edge-modifier-quick-actions {
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.edge-modifier-quick-actions button,
+.edge-modifier-footer button {
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid #c4d3df;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.edge-modifier-quick-actions button {
+  color: #33556d;
+  background: #f4f8fb;
+}
+
+.edge-modifier-history-actions {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 8px;
+  background: #fff8ed;
+  border: 1px solid #efd7ad;
+  border-radius: 8px;
+}
+
+.edge-modifier-history-actions button {
+  min-height: 31px;
+  color: #7a4d13;
+  background: white;
+  border: 1px solid #e0bd80;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.edge-modifier-history-actions button:disabled {
+  color: #9aa8b3;
+  background: #f4f6f8;
+  border-color: #d5dde4;
+  cursor: not-allowed;
+}
+
+.edge-modifier-history-actions span {
+  color: #7a6851;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.edge-modifier-field {
+  display: block;
+  margin-top: 11px;
+  color: #415a6e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.edge-modifier-value-row {
+  gap: 7px;
+  margin-top: 5px;
+}
+
+.edge-modifier-value-row input[type="range"] {
+  min-width: 0;
+  flex: 1;
+  accent-color: #139ed0;
+}
+
+.edge-modifier-value-row input[type="number"],
+.edge-modifier-field select {
+  height: 31px;
+  color: #263f53;
+  background: white;
+  border: 1px solid #bdcdda;
+  border-radius: 6px;
+}
+
+.edge-modifier-value-row input[type="number"] {
+  width: 72px;
+  padding: 0 6px;
+}
+
+.edge-modifier-field select {
+  width: 100%;
+  margin-top: 5px;
+  padding: 0 7px;
+}
+
+.edge-modifier-check {
+  gap: 8px;
+  margin-top: 12px;
+  color: #415a6e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.edge-modifier-check input {
+  accent-color: #139ed0;
+}
+
+.edge-modifier-error {
+  margin-top: 12px;
+  padding: 8px 9px;
+  color: #9f2730;
+  background: #fff0f1;
+  border: 1px solid #efc4c8;
+  border-radius: 7px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.edge-modifier-footer {
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 15px;
+  padding-top: 12px;
+  border-top: 1px solid #dce5ec;
+}
+
+.edge-modifier-footer .secondary {
+  color: #486174;
+  background: white;
+}
+
+.edge-modifier-footer .primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: white;
+  background: #119dcc;
+  border-color: #0787b3;
+}
+
+.edge-modifier-footer .primary:disabled {
+  opacity: 0.48;
+  cursor: default;
+}
+
+.edge-modifier-spinner {
+  animation: edge-modifier-spin 0.8s linear infinite;
+}
+
+@keyframes edge-modifier-spin {
+  to { transform: rotate(360deg); }
+}
+
+.toolbar-mode-content {
+  position: absolute;
+  top: calc(var(--editor-toolbar-height) - var(--editor-toolbar-tools-height));
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  width: 100%;
+  height: var(--editor-toolbar-tools-height);
+  align-items: stretch;
+  background: #f4f7f9;
+  border-top: 1px solid #d2dce5;
+}
+
+.sketch-toolbar-ribbon {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: stretch;
+  background: #f4f7f9;
+}
+
+.sketch-create-section {
+  min-width: 150px;
+}
+
+.sketch-edit-section {
+  min-width: 150px;
+}
+
+.sketch-history-section {
+  min-width: 104px;
+}
+
+.sketch-measure-section {
+  min-width: 58px;
+}
+
+.sketch-start-section {
+  min-width: 250px;
+}
+
+.sketch-finish-section {
+  min-width: 190px;
+  border-left: 1px solid rgba(203, 215, 226, 0.82);
+}
+
+.sketch-tool-icon svg {
+  width: 30px;
+  height: 30px;
+  stroke-width: 1.8;
+}
+
+.sketch-command-button {
+  display: inline-flex;
+  height: 43px;
+  min-width: 80px;
+  padding: 3px 9px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  color: #39546a;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.sketch-command-button svg {
+  width: 25px;
+  height: 25px;
+  stroke-width: 1.8;
+}
+
+.sketch-command-button:hover:not(:disabled) {
+  color: #17405d;
+  background: #e7f5fb;
+  border-color: #bcdce8;
+}
+
+.sketch-command-button.primary {
+  color: #126b8e;
+}
+
+.sketch-command-button.cancel {
+  color: #835059;
+}
+
+.sketch-command-button.disabled,
+.sketch-command-button:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.toolbar-workspace-tabs {
+  position: absolute;
+  top: 0;
+  left: 10px;
+  z-index: 2;
+  display: flex;
+  width: max-content;
+  height: calc(var(--editor-toolbar-height) - var(--editor-toolbar-tools-height));
+  align-items: stretch;
+}
+
+.toolbar-workspace-tabs button {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 0 18px;
+  color: #607589;
+  background: transparent;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.toolbar-workspace-tabs button:hover {
+  color: #294a63;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.toolbar-workspace-tabs button.active {
+  color: #264d68;
+  background: rgba(255, 255, 255, 0.8);
+  border-bottom-color: #159fd0;
+}
+
 .tool-group {
   display: flex;
-  height: 76px;
+  height: var(--editor-toolbar-tools-height);
   border-right: 1px solid #d7e0e8;
 }
 
@@ -986,7 +1367,7 @@ button {
   position: relative;
   display: flex;
   min-width: 88px;
-  height: 76px;
+  height: var(--editor-toolbar-tools-height);
   flex-direction: column;
   justify-content: flex-start;
   border-right: 1px solid rgba(203, 215, 226, 0.82);
@@ -1069,8 +1450,8 @@ button {
 .toolbar-icon .toolbar-sprite-icon,
 .toolbar-icon .vector-toolbar-sprite-icon,
 .toolbar-icon .toolbar-command-icon {
-  width: 32px;
-  height: 32px;
+  width: 43px;
+  height: 43px;
 }
 
 .toolbar-command-icon {
@@ -1124,8 +1505,8 @@ button {
 }
 
 .toolbar-icon .toolbar-user-art-icon {
-  width: 40px;
-  height: 40px;
+  width: 43px;
+  height: 43px;
 }
 
 .toolbar-icon.disabled .toolbar-command-icon {
@@ -1237,13 +1618,13 @@ button {
 }
 
 .shape-menu-trigger .vector-toolbar-sprite-icon {
-  width: 32px;
-  height: 32px;
+  width: 43px;
+  height: 43px;
 }
 
 .shape-menu-dropdown {
   position: absolute;
-  top: 76px;
+  top: var(--editor-toolbar-tools-height);
   left: 0;
   z-index: 60;
   width: 244px;
@@ -1357,29 +1738,29 @@ button {
 }
 
 .action-buttons button .vector-toolbar-sprite-icon {
-  width: 32px;
-  height: 32px;
+  width: 43px;
+  height: 43px;
 }
 
 .action-buttons .action-icon-button .vector-toolbar-sprite-icon {
-  width: 32px;
-  height: 32px;
+  width: 43px;
+  height: 43px;
 }
 
 .action-buttons .action-icon-button .toolbar-command-icon {
-  width: 32px;
-  height: 32px;
+  width: 43px;
+  height: 43px;
   object-fit: contain;
 }
 
 .action-buttons .action-icon-button .toolbar-user-art-icon {
-  width: 40px;
-  height: 40px;
+  width: 43px;
+  height: 43px;
 }
 
 .top-dropdown {
   position: fixed;
-  top: 76px;
+  top: var(--editor-toolbar-height);
   left: 96px;
   z-index: 45;
   width: 218px;
@@ -1410,7 +1791,7 @@ button {
 
 .top-action-panel {
   position: fixed;
-  top: 84px;
+  top: calc(var(--editor-toolbar-height) + 8px);
   right: 18px;
   z-index: 44;
   width: 322px;
@@ -1560,7 +1941,7 @@ button {
 
 .editor-body {
   position: fixed;
-  inset: 76px 0 0 0;
+  inset: var(--editor-toolbar-height) 0 0 0;
   display: flex;
   min-height: 0;
   background: var(--background);
@@ -1570,9 +1951,483 @@ button {
   position: relative;
   flex: 1;
   min-width: 0;
-  height: calc(100vh - 76px);
+  height: calc(100vh - var(--editor-toolbar-height));
   overflow: hidden;
   background: var(--background);
+}
+
+.sketch-workspace-stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: calc(100vh - var(--editor-toolbar-height));
+  overflow: hidden;
+  background: #f8fbfc;
+}
+
+.sketch-mode-badge {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 9;
+  padding: 4px 10px;
+  color: #ffffff;
+  background: #37a95b;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(25, 64, 43, 0.2);
+  font-size: 11px;
+  font-weight: 900;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.sketch-plate-wrap {
+  position: absolute;
+  inset: 14px 14px 42px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.sketch-plate {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.sketch-plate.panning {
+  cursor: grabbing;
+}
+
+.sketch-plate.tool-select:not(.panning) {
+  cursor: default;
+}
+
+.sketch-selection-marquee {
+  fill: rgba(0, 159, 227, 0.1);
+  stroke: rgba(0, 159, 227, 0.86);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-plate-background {
+  fill: #ddf8ff;
+  stroke: none;
+}
+
+.sketch-plate-border {
+  fill: none;
+  stroke: #4bbddf;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-grid line {
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-grid .minor {
+  stroke: rgba(96, 204, 231, 0.46);
+}
+
+.sketch-grid .major {
+  stroke: rgba(54, 174, 207, 0.68);
+}
+
+.sketch-grid .axis {
+  stroke: #178db5;
+  stroke-width: 1.6;
+}
+
+.sketch-reference-shapes rect,
+.sketch-reference-shapes ellipse {
+  fill: rgba(207, 142, 42, 0.22);
+  stroke: rgba(188, 113, 18, 0.65);
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-reference-images image {
+  cursor: move;
+  image-rendering: auto;
+  transition: opacity 100ms ease;
+}
+
+.sketch-reference-images image:hover {
+  filter: saturate(1.08) contrast(1.03);
+}
+
+.sketch-image-selection-box {
+  fill: none;
+  stroke: #009fe3;
+  stroke-width: 1.7;
+  stroke-dasharray: 5 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-image-resize-handle {
+  fill: #ffffff;
+  stroke: #0b75a3;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-image-resize-handle:hover {
+  fill: #ffb24b;
+  stroke: #9d4d00;
+}
+
+.sketch-image-resize-handle.handle-nw,
+.sketch-image-resize-handle.handle-se {
+  cursor: nwse-resize;
+}
+
+.sketch-image-resize-handle.handle-ne,
+.sketch-image-resize-handle.handle-sw {
+  cursor: nesw-resize;
+}
+
+.sketch-image-resize-handle.handle-n,
+.sketch-image-resize-handle.handle-s {
+  cursor: ns-resize;
+}
+
+.sketch-image-resize-handle.handle-e,
+.sketch-image-resize-handle.handle-w {
+  cursor: ew-resize;
+}
+
+.sketch-image-dimension rect {
+  fill: rgba(255, 255, 255, 0.97);
+  stroke: rgba(127, 151, 168, 0.9);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 1px 2px rgba(25, 55, 76, 0.15));
+}
+
+.sketch-image-dimension text {
+  fill: #173b5a;
+  font-weight: 700;
+  text-anchor: middle;
+}
+
+.sketch-profile-fills path {
+  fill: rgba(98, 148, 214, 0.2);
+  fill-rule: evenodd;
+  stroke: none;
+}
+
+.sketch-segments path {
+  fill: none;
+  stroke: #173f60;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.sketch-segments path:hover,
+.sketch-segments path.selected {
+  stroke: #ff8a00;
+  stroke-width: 4;
+}
+
+.sketch-preview-line {
+  stroke: #169fce;
+  stroke-width: 2;
+  stroke-dasharray: 6 5;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-drag-handles line,
+.sketch-curve-handles line {
+  stroke: #f08036;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-drag-handles circle,
+.sketch-curve-handles circle {
+  fill: #ffffff;
+  stroke: #f08036;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  cursor: move;
+}
+
+.sketch-points circle {
+  fill: #ffffff;
+  stroke: #143c5c;
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+  cursor: pointer;
+}
+
+.sketch-points circle:hover,
+.sketch-points circle.active {
+  fill: #71d7f0;
+  stroke: #086f98;
+}
+
+.sketch-points circle.selected {
+  fill: #ffb24b;
+  stroke: #9d4d00;
+  stroke-width: 2;
+}
+
+.sketch-cursor-point {
+  fill: #169fce;
+  stroke: #ffffff;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-segment-dimensions rect {
+  fill: rgba(255, 255, 255, 0.94);
+  stroke: rgba(220, 229, 235, 0.86);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-segment-dimensions text {
+  fill: #16283a;
+  font-weight: 500;
+  text-anchor: middle;
+}
+
+.sketch-segment-dimensions.preview rect {
+  fill: rgba(255, 255, 255, 0.94);
+  stroke: rgba(220, 229, 235, 0.86);
+}
+
+.sketch-segment-dimensions.preview text {
+  fill: #16283a;
+}
+
+.sketch-measurement > line {
+  stroke: #d56100;
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.sketch-measurement-pill {
+  cursor: pointer;
+}
+
+.sketch-measurement-pill rect {
+  fill: rgba(255, 255, 255, 0.94);
+  stroke: rgba(220, 229, 235, 0.86);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.sketch-measurement-pill text {
+  fill: #16283a;
+  font-weight: 500;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.sketch-measurement-pill:hover rect {
+  fill: rgba(255, 255, 255, 0.98);
+  stroke: rgba(0, 159, 227, 0.85);
+}
+
+.sketch-measurement-pill text.remove {
+  fill: #607589;
+}
+
+.sketch-grid-settings {
+  padding: 4px 7px;
+  background: rgba(248, 251, 252, 0.92);
+  border: 1px solid #d6e2e9;
+  border-radius: 3px;
+}
+
+.sketch-point-actions {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  z-index: 9;
+  display: flex;
+  gap: 5px;
+  padding: 5px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #cad9e3;
+  border-radius: 22px;
+  box-shadow: 0 3px 12px rgba(31, 55, 73, 0.16);
+  transform: translateX(-50%);
+}
+
+.sketch-point-actions button {
+  display: inline-flex;
+  min-width: 62px;
+  height: 35px;
+  padding: 0 9px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #435d72;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 17px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.sketch-point-actions button:hover {
+  color: #126b8e;
+  background: #e6f5fb;
+  border-color: #b9dce9;
+}
+
+.sketch-point-actions svg {
+  width: 17px;
+  height: 17px;
+}
+
+.sketch-image-inspector .shape-inspector-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sketch-image-inspector .inspector-header-icon.danger:hover {
+  color: #c3262e;
+  background: #fff0f1;
+}
+
+.sketch-image-preview-card {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  margin: 10px;
+  padding: 14px;
+  color: #6a7e90;
+  background: rgba(255, 255, 255, 0.98);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.sketch-image-preview-card img {
+  display: block;
+  width: 100%;
+  height: 112px;
+  object-fit: contain;
+  background:
+    linear-gradient(45deg, #eef2f5 25%, transparent 25%),
+    linear-gradient(-45deg, #eef2f5 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #eef2f5 75%),
+    linear-gradient(-45deg, transparent 75%, #eef2f5 75%);
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  background-size: 12px 12px;
+  border: 1px solid #d5e0e7;
+  border-radius: 4px;
+}
+
+.sketch-image-inspector .property-card-header.static {
+  cursor: default;
+}
+
+.sketch-image-inspector .property-card-header.static:hover {
+  color: #31465d;
+}
+
+.sketch-image-range-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.sketch-image-number-input,
+.sketch-image-position-field input {
+  width: 100%;
+  height: 31px;
+  padding: 0 10px;
+  color: #526174;
+  font: 700 14px/1 var(--font-ui);
+  background: #ffffff;
+  border: 1px solid #cbd6e1;
+  border-radius: 999px;
+  outline: 0;
+}
+
+.sketch-image-number-input:focus,
+.sketch-image-position-field input:focus {
+  border-color: #74bdf0;
+  box-shadow: 0 0 0 3px rgba(0, 156, 222, 0.14);
+}
+
+.sketch-image-range-row span {
+  min-width: 26px;
+  color: #748596;
+  font-size: 12px;
+}
+
+.sketch-image-range > input[type="range"] {
+  width: 100%;
+  height: 12px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sketch-image-range > input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: linear-gradient(to right, #00a6db 0 var(--slider-pos), #dbe1e7 var(--slider-pos) 100%);
+  border-radius: 999px;
+}
+
+.sketch-image-range > input[type="range"]::-webkit-slider-thumb {
+  width: 13px;
+  height: 13px;
+  margin-top: -4.5px;
+  appearance: none;
+  background: #ffffff;
+  border: 2px solid #009fd7;
+  border-radius: 999px;
+  box-shadow: 0 1px 3px rgba(23, 59, 90, 0.22);
+}
+
+.sketch-image-position-field {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  color: #637286;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.sketch-image-aspect-toggle {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: #53697c;
+  background: #f7fafc;
+  border: 1px solid #d1dde5;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.sketch-image-aspect-toggle.active {
+  color: #0879a5;
+  background: #eaf8fc;
+  border-color: #90cee2;
 }
 
 .view-cube {
@@ -1591,7 +2446,7 @@ button {
   text-transform: uppercase;
   filter: drop-shadow(0 2px 3px rgba(45, 64, 82, 0.14));
   opacity: 0.9;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .view-cube-inner {
@@ -1613,8 +2468,23 @@ button {
   height: 58px;
   background: rgba(255, 255, 255, 0.9);
   border: 2px solid #cfd7df;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  appearance: none;
   backface-visibility: hidden;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.68);
+}
+
+.cube-face:hover,
+.cube-face:focus-visible {
+  color: #486379;
+  border-color: #8fb4ca;
+  outline: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.72),
+    0 0 0 2px rgba(80, 168, 212, 0.18);
 }
 
 .cube-top {
@@ -2442,6 +3312,31 @@ button {
   opacity: 0.55;
 }
 
+.shape-inspector .edit-sketch-button {
+  display: block;
+  width: calc(100% - 20px);
+  height: 38px;
+  margin: 0 10px 12px;
+  color: #28516d;
+  background: #ffffff;
+  border: 1px solid #bfd2df;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.shape-inspector .edit-sketch-button:hover:not(:disabled) {
+  color: #0d7198;
+  background: #eaf7fb;
+  border-color: #8ecbdf;
+}
+
+.shape-inspector .edit-sketch-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .property-card {
   margin: 0 10px 10px;
   padding: 0 14px 18px;
@@ -3047,7 +3942,7 @@ button {
   position: relative;
   z-index: 10;
   width: 276px;
-  height: calc(100vh - 76px);
+  height: calc(100vh - var(--editor-toolbar-height));
   flex: 0 0 276px;
   overflow: hidden;
   background: var(--panel);
@@ -3467,7 +4362,8 @@ button {
 }
 
 @media (max-width: 980px) {
-  .secondary-toolbar {
+  .toolbar-mode-content.geometry,
+  .toolbar-mode-content.sketch {
     overflow-x: auto;
     overflow-y: hidden;
   }
@@ -3488,7 +4384,7 @@ button {
 
   .shape-menu-dropdown {
     position: fixed;
-    top: 76px;
+    top: var(--editor-toolbar-height);
     left: 10px;
     width: min(264px, calc(100vw - 20px));
   }

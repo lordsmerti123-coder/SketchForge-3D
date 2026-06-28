@@ -1,0 +1,866 @@
+"use client";
+
+import { ChevronUp, CornerDownRight, Home, Link, Link2Off, Minus, Plus, Split, Trash2, Waves } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { SnapGridControl } from "@/components/workplane/ShapeInspector";
+import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
+import type { GridSize, SketchImage, SketchPoint, SketchProfile, SketchSegment, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
+
+export type SketchTool = "line" | "bezier" | "smooth" | "select" | "refine" | "erase" | "measure";
+export type SketchSelection =
+  | { kind: "point"; id: string }
+  | { kind: "segment"; id: string }
+  | { kind: "image"; id: string }
+  | { kind: "multiple"; pointIds: string[]; segmentIds: string[]; imageIds?: string[] }
+  | null;
+export type SketchMeasurement = { start: SketchPoint; end: SketchPoint } | null;
+
+type SketchWorkspaceProps = {
+  profile: SketchProfile;
+  referenceShapes: WorkplaneShape[];
+  tool: SketchTool;
+  activePointId: string | null;
+  selected: SketchSelection;
+  measurement: SketchMeasurement;
+  initialSnap?: GridSize;
+  initialWorkspace?: WorkplaneWorkspaceSettings;
+  onPlanePoint: (point: { x: number; z: number }, handles?: { handleIn: { x: number; z: number }; handleOut: { x: number; z: number } }) => void;
+  onPointPress: (id: string) => void;
+  onSelectSegment: (id: string) => void;
+  onSelectMany: (pointIds: string[], segmentIds: string[], imageIds: string[]) => void;
+  onSelectImage: (id: string) => void;
+  onUpdateImage: (id: string, patch: Partial<SketchImage>, message?: string) => void;
+  onDeleteImage: (id: string) => void;
+  onDeletePoint: (id: string) => void;
+  onDeleteSegment: (id: string) => void;
+  onMovePoint: (id: string, point: { x: number; z: number }) => void;
+  onMoveHandle: (id: string, handle: "in" | "out", point: { x: number; z: number }) => void;
+  onInsertPoint: (segmentId: string, point: { x: number; z: number }) => void;
+  onSetPointMode: (id: string, mode: "corner" | "smooth" | "split") => void;
+  onClearMeasurement: () => void;
+};
+
+type PathStep = { segment: SketchSegment; from: SketchPoint; to: SketchPoint };
+type DisplayPath = { id: string; points: SketchPoint[]; steps: PathStep[]; closed: boolean };
+type PointerAction =
+  | { kind: "bezier"; pointerId: number; origin: { x: number; z: number }; current: { x: number; z: number } }
+  | { kind: "move-point"; pointerId: number; pointId: string; current: { x: number; z: number } }
+  | { kind: "move-handle"; pointerId: number; pointId: string; handle: "in" | "out"; current: { x: number; z: number } }
+  | { kind: "pan"; pointerId: number; clientX: number; clientY: number }
+  | { kind: "marquee"; pointerId: number; origin: { x: number; z: number }; current: { x: number; z: number } }
+  | { kind: "move-image"; pointerId: number; imageId: string; origin: { x: number; z: number }; current: { x: number; z: number }; start: SketchImage }
+  | { kind: "resize-image"; pointerId: number; imageId: string; handle: ResizeHandle; current: { x: number; z: number }; start: SketchImage };
+
+type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+
+function snapStep(size: GridSize) {
+  if (size === "Off") return 0;
+  if (size === "Brick") return 8;
+  return Number.parseFloat(size) || 1;
+}
+
+function snapValue(value: number, step: number) {
+  return step > 0 ? Math.round(value / step) * step : value;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function resizeSketchImage(start: SketchImage, handle: ResizeHandle, point: { x: number; z: number }): Partial<SketchImage> {
+  const minimum = 0.5;
+  const startsWest = handle.includes("w");
+  const startsEast = handle.includes("e");
+  const startsNorth = handle.includes("n");
+  const startsSouth = handle.includes("s");
+  const minX = start.x - start.width / 2;
+  const maxX = start.x + start.width / 2;
+  const minZ = start.z - start.depth / 2;
+  const maxZ = start.z + start.depth / 2;
+  const aspect = start.width / Math.max(minimum, start.depth);
+
+  if (start.lockAspect !== false) {
+    if ((startsWest || startsEast) && (startsNorth || startsSouth)) {
+      const fixedX = startsWest ? maxX : minX;
+      const fixedZ = startsNorth ? maxZ : minZ;
+      const widthScale = Math.abs(point.x - fixedX) / Math.max(minimum, start.width);
+      const depthScale = Math.abs(point.z - fixedZ) / Math.max(minimum, start.depth);
+      const scale = Math.max(minimum / Math.min(start.width, start.depth), widthScale, depthScale);
+      const width = Math.max(minimum, start.width * scale);
+      const depth = Math.max(minimum, start.depth * scale);
+      const xDirection = startsWest ? -1 : 1;
+      const zDirection = startsNorth ? -1 : 1;
+      return { width, depth, x: fixedX + xDirection * width / 2, z: fixedZ + zDirection * depth / 2 };
+    }
+    if (startsWest || startsEast) {
+      const fixedX = startsWest ? maxX : minX;
+      const width = Math.max(minimum, Math.abs(point.x - fixedX));
+      return { width, depth: Math.max(minimum, width / aspect), x: fixedX + (startsWest ? -1 : 1) * width / 2 };
+    }
+    const fixedZ = startsNorth ? maxZ : minZ;
+    const depth = Math.max(minimum, Math.abs(point.z - fixedZ));
+    return { depth, width: Math.max(minimum, depth * aspect), z: fixedZ + (startsNorth ? -1 : 1) * depth / 2 };
+  }
+
+  let nextMinX = minX;
+  let nextMaxX = maxX;
+  let nextMinZ = minZ;
+  let nextMaxZ = maxZ;
+  if (startsWest) nextMinX = Math.min(point.x, maxX - minimum);
+  if (startsEast) nextMaxX = Math.max(point.x, minX + minimum);
+  if (startsNorth) nextMinZ = Math.min(point.z, maxZ - minimum);
+  if (startsSouth) nextMaxZ = Math.max(point.z, minZ + minimum);
+  return {
+    x: (nextMinX + nextMaxX) / 2,
+    z: (nextMinZ + nextMaxZ) / 2,
+    width: nextMaxX - nextMinX,
+    depth: nextMaxZ - nextMinZ,
+  };
+}
+
+function formatDimension(value: number, accuracy: 1 | 2 | 3) {
+  const threshold = 0.5 * 10 ** -accuracy;
+  return (Math.abs(value) < threshold ? 0 : value).toFixed(accuracy);
+}
+
+function cubicPoint(start: SketchPoint, first: { x: number; z: number }, second: { x: number; z: number }, end: SketchPoint, amount: number) {
+  const inverse = 1 - amount;
+  return {
+    x: inverse ** 3 * start.x + 3 * inverse ** 2 * amount * first.x + 3 * inverse * amount ** 2 * second.x + amount ** 3 * end.x,
+    z: inverse ** 3 * start.z + 3 * inverse ** 2 * amount * first.z + 3 * inverse * amount ** 2 * second.z + amount ** 3 * end.z,
+  };
+}
+
+function segmentDimension(segment: SketchSegment, pointById: Map<string, SketchPoint>) {
+  const start = pointById.get(segment.startId);
+  const end = pointById.get(segment.endId);
+  if (!start || !end) return null;
+  const first = start.handleOut;
+  const second = end.handleIn;
+  if (segment.kind === "line" || !first || !second) {
+    return {
+      length: Math.hypot(end.x - start.x, end.z - start.z),
+      midpoint: { x: (start.x + end.x) / 2, z: (start.z + end.z) / 2 },
+    };
+  }
+  let length = 0;
+  let previous = start;
+  for (let index = 1; index <= 32; index += 1) {
+    const point = cubicPoint(start, first, second, end, index / 32);
+    length += Math.hypot(point.x - previous.x, point.z - previous.z);
+    previous = { ...point, id: "curve-sample" };
+  }
+  return { length, midpoint: cubicPoint(start, first, second, end, 0.5) };
+}
+
+function orderedPaths(profile: SketchProfile): DisplayPath[] {
+  const pointById = new Map(profile.points.map((point) => [point.id, point]));
+  const adjacency = new Map<string, Array<{ pointId: string; segment: SketchSegment }>>();
+  profile.points.forEach((point) => adjacency.set(point.id, []));
+  const valid = profile.segments.filter((segment) => {
+    if (!pointById.has(segment.startId) || !pointById.has(segment.endId)) return false;
+    adjacency.get(segment.startId)?.push({ pointId: segment.endId, segment });
+    adjacency.get(segment.endId)?.push({ pointId: segment.startId, segment });
+    return true;
+  });
+  const unvisited = new Set(valid.map((segment) => segment.id));
+  const paths: DisplayPath[] = [];
+  while (unvisited.size > 0) {
+    const seedId = unvisited.values().next().value as string;
+    const seed = valid.find((segment) => segment.id === seedId);
+    if (!seed) break;
+    const component = new Set<string>();
+    const queue = [seed.startId, seed.endId];
+    while (queue.length) {
+      const id = queue.pop();
+      if (!id || component.has(id)) continue;
+      component.add(id);
+      adjacency.get(id)?.forEach((edge) => queue.push(edge.pointId));
+    }
+    const startId = [...component].find((id) => (adjacency.get(id)?.filter((edge) => unvisited.has(edge.segment.id)).length ?? 0) === 1) ?? seed.startId;
+    const first = pointById.get(startId);
+    if (!first) break;
+    const points = [first];
+    const steps: PathStep[] = [];
+    let currentId = startId;
+    for (let guard = 0; guard <= valid.length; guard += 1) {
+      const edge = adjacency.get(currentId)?.find((candidate) => unvisited.has(candidate.segment.id));
+      if (!edge) break;
+      const from = pointById.get(currentId);
+      const to = pointById.get(edge.pointId);
+      if (!from || !to) break;
+      unvisited.delete(edge.segment.id);
+      steps.push({ segment: edge.segment, from, to });
+      currentId = to.id;
+      if (currentId === startId) break;
+      points.push(to);
+    }
+    paths.push({ id: seed.id, points, steps, closed: currentId === startId && steps.length >= 3 });
+  }
+  return paths;
+}
+
+function curveControls(step: PathStep) {
+  const forward = step.segment.startId === step.from.id;
+  return {
+    first: forward ? step.from.handleOut : step.from.handleIn,
+    second: forward ? step.to.handleIn : step.to.handleOut,
+  };
+}
+
+function pathData(path: DisplayPath) {
+  const first = path.points[0];
+  if (!first) return "";
+  const commands = [`M ${first.x} ${first.z}`];
+  path.steps.forEach((step) => {
+    const controls = curveControls(step);
+    if (step.segment.kind !== "line" && controls.first && controls.second) {
+      commands.push(`C ${controls.first.x} ${controls.first.z} ${controls.second.x} ${controls.second.z} ${step.to.x} ${step.to.z}`);
+    } else {
+      commands.push(`L ${step.to.x} ${step.to.z}`);
+    }
+  });
+  if (path.closed) commands.push("Z");
+  return commands.join(" ");
+}
+
+function segmentData(segment: SketchSegment, pointById: Map<string, SketchPoint>) {
+  const from = pointById.get(segment.startId);
+  const to = pointById.get(segment.endId);
+  if (!from || !to) return "";
+  const step = { segment, from, to };
+  const controls = curveControls(step);
+  return segment.kind !== "line" && controls.first && controls.second
+    ? `M ${from.x} ${from.z} C ${controls.first.x} ${controls.first.z} ${controls.second.x} ${controls.second.z} ${to.x} ${to.z}`
+    : `M ${from.x} ${from.z} L ${to.x} ${to.z}`;
+}
+
+function isRoundReference(shape: WorkplaneShape) {
+  return ["cylinder", "sphere", "cone", "torus", "tube", "ring", "halfSphere"].includes(shape.kind);
+}
+
+export function SketchWorkspace({
+  profile,
+  referenceShapes,
+  tool,
+  activePointId,
+  selected,
+  measurement,
+  initialSnap,
+  initialWorkspace,
+  onPlanePoint,
+  onPointPress,
+  onSelectSegment,
+  onSelectMany,
+  onSelectImage,
+  onUpdateImage,
+  onDeleteImage,
+  onDeletePoint,
+  onDeleteSegment,
+  onMovePoint,
+  onMoveHandle,
+  onInsertPoint,
+  onSetPointMode,
+  onClearMeasurement,
+}: SketchWorkspaceProps) {
+  const workspace = useMemo(() => normalizeWorkspaceSettings(initialWorkspace, DEFAULT_WORKPLANE_WORKSPACE), [initialWorkspace]);
+  const [snap, setSnap] = useState<GridSize>(() => normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID));
+  const [snapOpen, setSnapOpen] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, z: 0 });
+  const [hover, setHover] = useState<{ x: number; z: number } | null>(null);
+  const [pointerAction, setPointerAction] = useState<PointerAction | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const width = workspace.width / zoom;
+  const depth = workspace.depth / zoom;
+  const displayProfile = useMemo(() => {
+    if (pointerAction?.kind === "move-point") {
+      const source = profile.points.find((point) => point.id === pointerAction.pointId);
+      if (!source) return profile;
+      const deltaX = pointerAction.current.x - source.x;
+      const deltaZ = pointerAction.current.z - source.z;
+      return {
+        ...profile,
+        points: profile.points.map((point) => point.id === source.id ? {
+          ...point,
+          ...pointerAction.current,
+          handleIn: point.handleIn ? { x: point.handleIn.x + deltaX, z: point.handleIn.z + deltaZ } : undefined,
+          handleOut: point.handleOut ? { x: point.handleOut.x + deltaX, z: point.handleOut.z + deltaZ } : undefined,
+        } : point),
+      };
+    }
+    if (pointerAction?.kind === "move-handle") {
+      return {
+        ...profile,
+        points: profile.points.map((point) => {
+          if (point.id !== pointerAction.pointId) return point;
+          const next = { ...point, handleIn: point.handleIn ? { ...point.handleIn } : undefined, handleOut: point.handleOut ? { ...point.handleOut } : undefined };
+          if (pointerAction.handle === "in") next.handleIn = { ...pointerAction.current };
+          else next.handleOut = { ...pointerAction.current };
+          if (point.mode === "smooth") {
+            const opposite = { x: point.x * 2 - pointerAction.current.x, z: point.z * 2 - pointerAction.current.z };
+            if (pointerAction.handle === "in") next.handleOut = opposite;
+            else next.handleIn = opposite;
+          }
+          return next;
+        }),
+      };
+    }
+    return profile;
+  }, [pointerAction, profile]);
+  const displayImages = useMemo(() => {
+    const images = profile.images ?? [];
+    if (pointerAction?.kind === "move-image") {
+      const deltaX = pointerAction.current.x - pointerAction.origin.x;
+      const deltaZ = pointerAction.current.z - pointerAction.origin.z;
+      return images.map((image) => image.id === pointerAction.imageId ? { ...image, x: pointerAction.start.x + deltaX, z: pointerAction.start.z + deltaZ } : image);
+    }
+    if (pointerAction?.kind === "resize-image") {
+      return images.map((image) => image.id === pointerAction.imageId ? { ...image, ...resizeSketchImage(pointerAction.start, pointerAction.handle, pointerAction.current) } : image);
+    }
+    return images;
+  }, [pointerAction, profile.images]);
+  const pointById = useMemo(() => new Map(displayProfile.points.map((point) => [point.id, point])), [displayProfile.points]);
+  const paths = useMemo(() => orderedPaths(displayProfile), [displayProfile]);
+  const activePoint = activePointId ? pointById.get(activePointId) ?? null : null;
+  const selectedPoint = selected?.kind === "point" ? pointById.get(selected.id) ?? null : null;
+  const selectedImage = selected?.kind === "image" ? displayImages.find((image) => image.id === selected.id) ?? null : null;
+  const isPointSelected = (id: string) => selected?.kind === "point" ? selected.id === id : selected?.kind === "multiple" ? selected.pointIds.includes(id) : false;
+  const isSegmentSelected = (id: string) => selected?.kind === "segment" ? selected.id === id : selected?.kind === "multiple" ? selected.segmentIds.includes(id) : false;
+  const gridStep = clamp(workspace.gridBlockSize, 1, 200);
+  const verticalLines = useMemo(() => {
+    const lines: number[] = [];
+    const start = Math.ceil((-workspace.width / 2) / gridStep) * gridStep;
+    for (let x = start; x <= workspace.width / 2 + 0.0001; x += gridStep) lines.push(Number(x.toFixed(6)));
+    return lines;
+  }, [gridStep, workspace.width]);
+  const horizontalLines = useMemo(() => {
+    const lines: number[] = [];
+    const start = Math.ceil((-workspace.depth / 2) / gridStep) * gridStep;
+    for (let z = start; z <= workspace.depth / 2 + 0.0001; z += gridStep) lines.push(Number(z.toFixed(6)));
+    return lines;
+  }, [gridStep, workspace.depth]);
+
+  const pointFromEvent = (event: { clientX: number; clientY: number }) => {
+    const svg = svgRef.current;
+    const matrix = svg?.getScreenCTM();
+    if (!svg || !matrix) return null;
+    const screenPoint = svg.createSVGPoint();
+    screenPoint.x = event.clientX;
+    screenPoint.y = event.clientY;
+    const local = screenPoint.matrixTransform(matrix.inverse());
+    const step = snapStep(snap);
+    return {
+      x: clamp(snapValue(local.x, step), -workspace.width / 2, workspace.width / 2),
+      z: clamp(snapValue(local.y, step), -workspace.depth / 2, workspace.depth / 2),
+    };
+  };
+
+  const beginPan = (event: ReactPointerEvent<SVGElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    svgRef.current?.setPointerCapture(event.pointerId);
+    setPointerAction({ kind: "pan", pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY });
+  };
+
+  const handlePlanePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (event.button === 1) {
+      beginPan(event);
+      return;
+    }
+    if (event.button !== 0 || (event.target !== event.currentTarget && (event.target as Element).closest("[data-sketch-entity]"))) return;
+    const point = pointFromEvent(event);
+    if (!point) return;
+    event.preventDefault();
+    if (tool === "bezier") {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setPointerAction({ kind: "bezier", pointerId: event.pointerId, origin: point, current: point });
+    } else if (tool === "select") {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setPointerAction({ kind: "marquee", pointerId: event.pointerId, origin: point, current: point });
+    } else if (tool === "line" || tool === "smooth" || tool === "measure") {
+      onPlanePoint(point);
+    }
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (pointerAction?.kind === "pan") {
+      const matrix = svgRef.current?.getScreenCTM();
+      const scaleX = matrix ? Math.max(0.0001, Math.hypot(matrix.a, matrix.b)) : 1;
+      const scaleY = matrix ? Math.max(0.0001, Math.hypot(matrix.c, matrix.d)) : 1;
+      const deltaX = event.clientX - pointerAction.clientX;
+      const deltaY = event.clientY - pointerAction.clientY;
+      setPan((current) => ({
+        x: clamp(current.x - deltaX / scaleX, -workspace.width / 2, workspace.width / 2),
+        z: clamp(current.z - deltaY / scaleY, -workspace.depth / 2, workspace.depth / 2),
+      }));
+      setPointerAction({ ...pointerAction, clientX: event.clientX, clientY: event.clientY });
+      return;
+    }
+    const point = pointFromEvent(event);
+    setHover(point);
+    if (point && pointerAction) setPointerAction({ ...pointerAction, current: point });
+  };
+
+  const finishPointerAction = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const action = pointerAction;
+    if (!action || action.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (action.kind === "pan") {
+      setPointerAction(null);
+      return;
+    }
+    if (action.kind === "marquee") {
+      const minX = Math.min(action.origin.x, action.current.x);
+      const maxX = Math.max(action.origin.x, action.current.x);
+      const minZ = Math.min(action.origin.z, action.current.z);
+      const maxZ = Math.max(action.origin.z, action.current.z);
+      const contains = (point: { x: number; z: number }) => point.x >= minX && point.x <= maxX && point.z >= minZ && point.z <= maxZ;
+      const pointIds = profile.points.filter(contains).map((point) => point.id);
+      const segmentIds = profile.segments.filter((segment) => {
+        const start = pointById.get(segment.startId);
+        const end = pointById.get(segment.endId);
+        return Boolean(start && end && (contains(start) || contains(end) || contains({ x: (start.x + end.x) / 2, z: (start.z + end.z) / 2 })));
+      }).map((segment) => segment.id);
+      const imageIds = (profile.images ?? []).filter((image) => {
+        const imageMinX = image.x - image.width / 2;
+        const imageMaxX = image.x + image.width / 2;
+        const imageMinZ = image.z - image.depth / 2;
+        const imageMaxZ = image.z + image.depth / 2;
+        return imageMaxX >= minX && imageMinX <= maxX && imageMaxZ >= minZ && imageMinZ <= maxZ;
+      }).map((image) => image.id);
+      onSelectMany(pointIds, segmentIds, imageIds);
+      setPointerAction(null);
+      return;
+    }
+    if (action.kind === "bezier") {
+      const dx = action.current.x - action.origin.x;
+      const dz = action.current.z - action.origin.z;
+      onPlanePoint(action.origin, {
+        handleIn: { x: action.origin.x - dx, z: action.origin.z - dz },
+        handleOut: { x: action.origin.x + dx, z: action.origin.z + dz },
+      });
+    } else if (action.kind === "move-point") {
+      onMovePoint(action.pointId, action.current);
+    } else if (action.kind === "move-handle") {
+      onMoveHandle(action.pointId, action.handle, action.current);
+    } else if (action.kind === "move-image") {
+      onUpdateImage(action.imageId, {
+        x: action.start.x + action.current.x - action.origin.x,
+        z: action.start.z + action.current.z - action.origin.z,
+      }, "Sketch image moved");
+    } else if (action.kind === "resize-image") {
+      onUpdateImage(action.imageId, resizeSketchImage(action.start, action.handle, action.current), "Sketch image resized");
+    }
+    setPointerAction(null);
+  };
+
+  const handleWheel = (event: ReactWheelEvent<SVGSVGElement>) => {
+    event.preventDefault();
+    setZoom((current) => clamp(current * (event.deltaY > 0 ? 0.88 : 1.14), 0.75, 6));
+  };
+
+  const beginEntityDrag = (event: ReactPointerEvent<SVGElement>, action: PointerAction) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    svgRef.current?.setPointerCapture(event.pointerId);
+    setPointerAction(action);
+  };
+
+  const measurementLength = measurement ? Math.hypot(measurement.end.x - measurement.start.x, measurement.end.z - measurement.start.z) : 0;
+  const measurementLabel = formatDimension(measurementLength, workspace.accuracy);
+  const previewLength = activePoint && hover ? Math.hypot(hover.x - activePoint.x, hover.z - activePoint.z) : 0;
+  const previewLabel = formatDimension(previewLength, workspace.accuracy);
+  const pillScale = 1 / zoom;
+  const selectedImageBounds = selectedImage ? {
+    minX: selectedImage.x - selectedImage.width / 2,
+    maxX: selectedImage.x + selectedImage.width / 2,
+    minZ: selectedImage.z - selectedImage.depth / 2,
+    maxZ: selectedImage.z + selectedImage.depth / 2,
+  } : null;
+  const imageResizeHandles: Array<{ id: ResizeHandle; x: number; z: number }> = selectedImage && selectedImageBounds ? [
+    { id: "nw", x: selectedImageBounds.minX, z: selectedImageBounds.minZ },
+    { id: "n", x: selectedImage.x, z: selectedImageBounds.minZ },
+    { id: "ne", x: selectedImageBounds.maxX, z: selectedImageBounds.minZ },
+    { id: "e", x: selectedImageBounds.maxX, z: selectedImage.z },
+    { id: "se", x: selectedImageBounds.maxX, z: selectedImageBounds.maxZ },
+    { id: "s", x: selectedImage.x, z: selectedImageBounds.maxZ },
+    { id: "sw", x: selectedImageBounds.minX, z: selectedImageBounds.maxZ },
+    { id: "w", x: selectedImageBounds.minX, z: selectedImage.z },
+  ] : [];
+
+  return (
+    <main className="sketch-workspace-stage">
+      <div className="sketch-mode-badge">Sketch view</div>
+      <div className="camera-controls sketch-camera-controls" aria-label="Sketch view controls">
+        <button aria-label="Reset sketch view" onClick={() => { setZoom(1); setPan({ x: 0, z: 0 }); }}><Home size={28} /></button>
+        <button aria-label="Zoom in" onClick={() => setZoom((value) => clamp(value * 1.25, 0.75, 6))}><Plus size={33} /></button>
+        <button aria-label="Zoom out" onClick={() => setZoom((value) => clamp(value / 1.25, 0.75, 6))}><Minus size={33} /></button>
+      </div>
+      <section className="sketch-plate-wrap" aria-label="2D sketch plate">
+        <svg
+          ref={svgRef}
+          className={`sketch-plate tool-${tool} ${pointerAction?.kind === "pan" ? "panning" : ""}`}
+          viewBox={`${pan.x - width / 2} ${pan.z - depth / 2} ${width} ${depth}`}
+          preserveAspectRatio="xMidYMid meet"
+          onPointerDown={handlePlanePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={finishPointerAction}
+          onPointerCancel={() => setPointerAction(null)}
+          onPointerLeave={() => !pointerAction && setHover(null)}
+          onWheel={handleWheel}
+        >
+          <rect className="sketch-plate-background" x={-workspace.width / 2} y={-workspace.depth / 2} width={workspace.width} height={workspace.depth} />
+          {workspace.showGrid ? (
+            <g className="sketch-grid" pointerEvents="none">
+              {verticalLines.map((x, index) => <line className={Math.abs(x) < 0.0001 ? "axis" : index % 4 === 0 ? "major" : "minor"} key={`x-${x}`} x1={x} y1={-workspace.depth / 2} x2={x} y2={workspace.depth / 2} />)}
+              {horizontalLines.map((z, index) => <line className={Math.abs(z) < 0.0001 ? "axis" : index % 4 === 0 ? "major" : "minor"} key={`z-${z}`} x1={-workspace.width / 2} y1={z} x2={workspace.width / 2} y2={z} />)}
+            </g>
+          ) : null}
+          <g className="sketch-reference-images">
+            {displayImages.map((image) => (
+              <image
+                key={image.id}
+                data-sketch-entity="image"
+                aria-label={image.name}
+                href={image.dataUrl}
+                x={image.x - image.width / 2}
+                y={image.z - image.depth / 2}
+                width={image.width}
+                height={image.depth}
+                opacity={image.opacity ?? 0.55}
+                preserveAspectRatio="none"
+                pointerEvents={tool === "select" ? "auto" : "none"}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (event.button === 1) {
+                    beginPan(event);
+                    return;
+                  }
+                  if (event.button !== 0 || tool !== "select") return;
+                  const point = pointFromEvent(event);
+                  if (!point) return;
+                  onSelectImage(image.id);
+                  beginEntityDrag(event, {
+                    kind: "move-image",
+                    pointerId: event.pointerId,
+                    imageId: image.id,
+                    origin: point,
+                    current: point,
+                    start: { ...image },
+                  });
+                }}
+              />
+            ))}
+          </g>
+          <g className="sketch-reference-shapes" pointerEvents="none">
+            {referenceShapes.filter((shape) => !shape.hidden).map((shape) => (
+              <g key={shape.id} transform={`rotate(${shape.rotation ?? 0} ${shape.x} ${shape.z})`}>
+                {isRoundReference(shape) ? (
+                  <ellipse cx={shape.x} cy={shape.z} rx={shape.width / 2} ry={shape.depth / 2} />
+                ) : (
+                  <rect x={shape.x - shape.width / 2} y={shape.z - shape.depth / 2} width={shape.width} height={shape.depth} />
+                )}
+              </g>
+            ))}
+          </g>
+          <rect className="sketch-plate-border" x={-workspace.width / 2} y={-workspace.depth / 2} width={workspace.width} height={workspace.depth} pointerEvents="none" />
+          {pointerAction?.kind === "marquee" ? (
+            <rect
+              className="sketch-selection-marquee"
+              x={Math.min(pointerAction.origin.x, pointerAction.current.x)}
+              y={Math.min(pointerAction.origin.z, pointerAction.current.z)}
+              width={Math.abs(pointerAction.current.x - pointerAction.origin.x)}
+              height={Math.abs(pointerAction.current.z - pointerAction.origin.z)}
+              pointerEvents="none"
+            />
+          ) : null}
+          <g className="sketch-profile-fills" pointerEvents="none">
+            {paths.some((path) => path.closed) ? <path d={paths.filter((path) => path.closed).map(pathData).join(" ")} /> : null}
+          </g>
+          <g className="sketch-segments">
+            {displayProfile.segments.map((segment) => (
+              <path
+                data-sketch-entity="segment"
+                className={isSegmentSelected(segment.id) ? "selected" : ""}
+                key={segment.id}
+                d={segmentData(segment, pointById)}
+                onPointerDown={(event) => {
+                  const point = pointFromEvent(event);
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (event.button === 1) beginPan(event);
+                  else if (tool === "erase") onDeleteSegment(segment.id);
+                  else if (event.button === 0 && tool === "refine" && point) onInsertPoint(segment.id, point);
+                  else if (event.button === 0) onSelectSegment(segment.id);
+                }}
+              />
+            ))}
+          </g>
+          <g className="sketch-segment-dimensions" pointerEvents="none">
+            {displayProfile.segments.map((segment) => {
+              const dimension = segmentDimension(segment, pointById);
+              if (!dimension) return null;
+              const label = formatDimension(dimension.length, workspace.accuracy);
+              const pillWidth = Math.max(7.2, label.length * 1.2 + 2.4) * pillScale;
+              const pillHeight = 4.2 * pillScale;
+              return (
+                <g key={`dimension-${segment.id}`} transform={`translate(${dimension.midpoint.x} ${dimension.midpoint.z - 4 * pillScale})`}>
+                  <rect x={-pillWidth / 2} y={-pillHeight / 2} width={pillWidth} height={pillHeight} rx={0.55 * pillScale} />
+                  <text y={0.78 * pillScale} fontSize={2.25 * pillScale}>{label}</text>
+                </g>
+              );
+            })}
+          </g>
+          {activePoint && hover && ["line", "bezier", "smooth"].includes(tool) ? <line className="sketch-preview-line" x1={activePoint.x} y1={activePoint.z} x2={hover.x} y2={hover.z} pointerEvents="none" /> : null}
+          {activePoint && hover && ["line", "bezier", "smooth"].includes(tool) ? (
+            <g className="sketch-segment-dimensions preview" pointerEvents="none" transform={`translate(${(activePoint.x + hover.x) / 2} ${(activePoint.z + hover.z) / 2 - 4 * pillScale})`}>
+              <rect x={-(Math.max(7.2, previewLabel.length * 1.2 + 2.4) * pillScale) / 2} y={-(4.2 * pillScale) / 2} width={Math.max(7.2, previewLabel.length * 1.2 + 2.4) * pillScale} height={4.2 * pillScale} rx={0.55 * pillScale} />
+              <text y={0.78 * pillScale} fontSize={2.25 * pillScale}>{previewLabel}</text>
+            </g>
+          ) : null}
+          {pointerAction?.kind === "bezier" ? (
+            <g className="sketch-drag-handles" pointerEvents="none">
+              <line x1={pointerAction.origin.x * 2 - pointerAction.current.x} y1={pointerAction.origin.z * 2 - pointerAction.current.z} x2={pointerAction.current.x} y2={pointerAction.current.z} />
+              <circle cx={pointerAction.origin.x} cy={pointerAction.origin.z} r={1.2 / Math.sqrt(zoom)} />
+            </g>
+          ) : null}
+          {measurement ? (
+            <g className="sketch-measurement">
+              <line x1={measurement.start.x} y1={measurement.start.z} x2={measurement.end.x} y2={measurement.end.z} />
+              <g
+                className="sketch-measurement-pill"
+                role="button"
+                aria-label="Remove measurement"
+                transform={`translate(${(measurement.start.x + measurement.end.x) / 2} ${(measurement.start.z + measurement.end.z) / 2 - 4 * pillScale})`}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onClearMeasurement();
+                }}
+              >
+                <rect x={-(Math.max(9, measurementLabel.length * 1.2 + 4.2) * pillScale) / 2} y={-(4.2 * pillScale) / 2} width={Math.max(9, measurementLabel.length * 1.2 + 4.2) * pillScale} height={4.2 * pillScale} rx={0.55 * pillScale} />
+                <text x={-0.9 * pillScale} y={0.78 * pillScale} fontSize={2.25 * pillScale}>{measurementLabel}</text>
+                <text className="remove" x={(Math.max(9, measurementLabel.length * 1.2 + 4.2) * pillScale) / 2 - 1.45 * pillScale} y={0.82 * pillScale} fontSize={2.45 * pillScale}>×</text>
+              </g>
+            </g>
+          ) : null}
+          {selectedPoint && tool === "select" ? (
+            <g className="sketch-curve-handles">
+              {selectedPoint.handleIn ? <><line x1={selectedPoint.x} y1={selectedPoint.z} x2={selectedPoint.handleIn.x} y2={selectedPoint.handleIn.z} /><circle data-sketch-entity="handle" cx={selectedPoint.handleIn.x} cy={selectedPoint.handleIn.z} r={1 / Math.sqrt(zoom)} onPointerDown={(event) => event.button === 1 ? beginPan(event) : beginEntityDrag(event, { kind: "move-handle", pointerId: event.pointerId, pointId: selectedPoint.id, handle: "in", current: selectedPoint.handleIn! })} /></> : null}
+              {selectedPoint.handleOut ? <><line x1={selectedPoint.x} y1={selectedPoint.z} x2={selectedPoint.handleOut.x} y2={selectedPoint.handleOut.z} /><circle data-sketch-entity="handle" cx={selectedPoint.handleOut.x} cy={selectedPoint.handleOut.z} r={1 / Math.sqrt(zoom)} onPointerDown={(event) => event.button === 1 ? beginPan(event) : beginEntityDrag(event, { kind: "move-handle", pointerId: event.pointerId, pointId: selectedPoint.id, handle: "out", current: selectedPoint.handleOut! })} /></> : null}
+            </g>
+          ) : null}
+          <g className="sketch-points">
+            {displayProfile.points.map((point) => (
+              <circle
+                data-sketch-entity="point"
+                className={`${isPointSelected(point.id) ? "selected" : ""} ${activePointId === point.id ? "active" : ""}`}
+                key={point.id}
+                cx={point.x}
+                cy={point.z}
+                r={0.82 / Math.sqrt(zoom)}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (event.button === 1) {
+                    beginPan(event);
+                  } else if (tool === "erase" || tool === "refine") {
+                    onDeletePoint(point.id);
+                  } else if (event.button === 0 && tool === "select") {
+                    onPointPress(point.id);
+                    beginEntityDrag(event, { kind: "move-point", pointerId: event.pointerId, pointId: point.id, current: { x: point.x, z: point.z } });
+                  } else if (event.button === 0) {
+                    onPointPress(point.id);
+                  }
+                }}
+              />
+            ))}
+          </g>
+          {selectedImage && selectedImageBounds && tool === "select" ? (
+            <g className="sketch-image-selection">
+              <rect
+                className="sketch-image-selection-box"
+                x={selectedImageBounds.minX}
+                y={selectedImageBounds.minZ}
+                width={selectedImage.width}
+                height={selectedImage.depth}
+                pointerEvents="none"
+              />
+              <g className="sketch-image-dimension width" pointerEvents="none" transform={`translate(${selectedImage.x} ${selectedImageBounds.minZ - 4 * pillScale})`}>
+                <rect x={-6 * pillScale} y={-2.1 * pillScale} width={12 * pillScale} height={4.2 * pillScale} rx={0.55 * pillScale} />
+                <text y={0.78 * pillScale} fontSize={2.25 * pillScale}>{formatDimension(selectedImage.width, workspace.accuracy)}</text>
+              </g>
+              <g className="sketch-image-dimension depth" pointerEvents="none" transform={`translate(${selectedImageBounds.maxX + 7 * pillScale} ${selectedImage.z})`}>
+                <rect x={-6 * pillScale} y={-2.1 * pillScale} width={12 * pillScale} height={4.2 * pillScale} rx={0.55 * pillScale} />
+                <text y={0.78 * pillScale} fontSize={2.25 * pillScale}>{formatDimension(selectedImage.depth, workspace.accuracy)}</text>
+              </g>
+              {imageResizeHandles.map((handle) => (
+                <rect
+                  key={handle.id}
+                  data-sketch-entity="image-handle"
+                  className={`sketch-image-resize-handle handle-${handle.id}`}
+                  x={handle.x - 1.05 * pillScale}
+                  y={handle.z - 1.05 * pillScale}
+                  width={2.1 * pillScale}
+                  height={2.1 * pillScale}
+                  rx={0.2 * pillScale}
+                  onPointerDown={(event) => {
+                    if (event.button === 1) {
+                      beginPan(event);
+                      return;
+                    }
+                    if (event.button !== 0) return;
+                    const point = pointFromEvent(event);
+                    if (!point) return;
+                    beginEntityDrag(event, {
+                      kind: "resize-image",
+                      pointerId: event.pointerId,
+                      imageId: selectedImage.id,
+                      handle: handle.id,
+                      current: point,
+                      start: { ...selectedImage },
+                    });
+                  }}
+                />
+              ))}
+            </g>
+          ) : null}
+          {hover && ["line", "bezier", "smooth", "measure"].includes(tool) ? <circle className="sketch-cursor-point" cx={hover.x} cy={hover.z} r={0.7 / Math.sqrt(zoom)} pointerEvents="none" /> : null}
+        </svg>
+      </section>
+      {selectedImage && tool === "select" ? (
+        <SketchImageInspector
+          image={selectedImage}
+          accuracy={workspace.accuracy}
+          onClose={() => onSelectMany([], [], [])}
+          onUpdate={(patch, message) => onUpdateImage(selectedImage.id, patch, message)}
+          onDelete={() => onDeleteImage(selectedImage.id)}
+        />
+      ) : null}
+      {selectedPoint && tool === "select" ? (
+        <div className="sketch-point-actions" aria-label="Point actions">
+          <button type="button" title="Make corner" onClick={() => onSetPointMode(selectedPoint.id, "corner")}><CornerDownRight /><span>Corner</span></button>
+          <button type="button" title="Make smooth" onClick={() => onSetPointMode(selectedPoint.id, "smooth")}><Waves /><span>Smooth</span></button>
+          <button type="button" title="Split handles" onClick={() => onSetPointMode(selectedPoint.id, "split")}><Split /><span>Split</span></button>
+        </div>
+      ) : null}
+      <div className="grid-settings sketch-grid-settings">
+        <SnapGridControl snap={snap} snapOpen={snapOpen} onSnapChange={setSnap} onSnapOpenChange={setSnapOpen} />
+      </div>
+    </main>
+  );
+}
+
+function SketchImageInspector({
+  image,
+  accuracy,
+  onClose,
+  onUpdate,
+  onDelete,
+}: {
+  image: SketchImage;
+  accuracy: 1 | 2 | 3;
+  onClose: () => void;
+  onUpdate: (patch: Partial<SketchImage>, message?: string) => void;
+  onDelete: () => void;
+}) {
+  const aspect = image.width / Math.max(0.5, image.depth);
+  const updateWidth = (width: number) => onUpdate({
+    width,
+    ...(image.lockAspect !== false ? { depth: Math.max(0.5, width / aspect) } : {}),
+  }, "Sketch image width updated");
+  const updateDepth = (depth: number) => onUpdate({
+    depth,
+    ...(image.lockAspect !== false ? { width: Math.max(0.5, depth * aspect) } : {}),
+  }, "Sketch image height updated");
+
+  return (
+    <aside className="shape-inspector sketch-image-inspector" aria-label={`${image.name} image settings`} onPointerDown={(event) => event.stopPropagation()}>
+      <div className="shape-inspector-header">
+        <button className="inspector-header-icon" type="button" aria-label="Close image settings" onClick={onClose}>
+          <ChevronUp size={26} strokeWidth={2.8} />
+        </button>
+        <strong>{image.name}</strong>
+        <div className="inspector-header-actions">
+          <button className="inspector-header-icon danger" type="button" aria-label="Delete sketch image" title="Delete image" onClick={onDelete}>
+            <Trash2 size={25} strokeWidth={2.2} />
+          </button>
+        </div>
+      </div>
+      <div className="sketch-image-preview-card">
+        <img src={image.dataUrl} alt="" />
+        <span>{image.pixelWidth} × {image.pixelHeight} px</span>
+      </div>
+      <div className="property-card">
+        <div className="property-card-header static"><span>Properties</span></div>
+        <div className="property-list">
+          <SketchImageRange label="Width" value={image.width} min={0.5} max={200} accuracy={accuracy} onChange={updateWidth} />
+          <SketchImageRange label="Height" value={image.depth} min={0.5} max={200} accuracy={accuracy} onChange={updateDepth} />
+          <SketchImageRange label="Opacity" value={(image.opacity ?? 0.55) * 100} min={5} max={100} accuracy={1} suffix="%" onChange={(opacity) => onUpdate({ opacity: opacity / 100 }, "Sketch image opacity updated")} />
+          <label className="sketch-image-position-field">
+            <span>Position X</span>
+            <input type="number" step="0.1" value={Number(image.x.toFixed(accuracy))} onChange={(event) => onUpdate({ x: Number(event.currentTarget.value) || 0 }, "Sketch image moved")} />
+          </label>
+          <label className="sketch-image-position-field">
+            <span>Position Y</span>
+            <input type="number" step="0.1" value={Number(image.z.toFixed(accuracy))} onChange={(event) => onUpdate({ z: Number(event.currentTarget.value) || 0 }, "Sketch image moved")} />
+          </label>
+          <button className={`sketch-image-aspect-toggle ${image.lockAspect !== false ? "active" : ""}`} type="button" onClick={() => onUpdate({ lockAspect: image.lockAspect === false }, "Image aspect ratio setting updated")}>
+            {image.lockAspect !== false ? <Link size={17} /> : <Link2Off size={17} />}
+            <span>{image.lockAspect !== false ? "Aspect ratio locked" : "Aspect ratio unlocked"}</span>
+          </button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function SketchImageRange({
+  label,
+  value,
+  min,
+  max,
+  accuracy,
+  suffix = "mm",
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  accuracy: 1 | 2 | 3;
+  suffix?: string;
+  onChange: (value: number) => void;
+}) {
+  const safeValue = clamp(Number.isFinite(value) ? value : min, min, max);
+  const [draft, setDraft] = useState(formatDimension(safeValue, accuracy));
+  useEffect(() => setDraft(formatDimension(safeValue, accuracy)), [accuracy, safeValue]);
+  const commit = () => {
+    const parsed = Number(draft);
+    onChange(clamp(Number.isFinite(parsed) ? parsed : safeValue, min, max));
+  };
+  const position = ((safeValue - min) / Math.max(0.001, max - min)) * 100;
+  return (
+    <label className="range-property sketch-image-range" style={{ "--slider-pos": `${position}%` } as CSSProperties}>
+      <span>{label}</span>
+      <div className="sketch-image-range-row">
+        <input
+          className="sketch-image-number-input"
+          type="number"
+          min={min}
+          max={max}
+          step={accuracy === 1 ? 0.1 : 0.01}
+          value={draft}
+          onChange={(event) => setDraft(event.currentTarget.value)}
+          onBlur={commit}
+          onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+        />
+        <span>{suffix}</span>
+      </div>
+      <input type="range" min={min} max={max} step={accuracy === 1 ? 0.1 : 0.01} value={safeValue} onChange={(event) => onChange(Number(event.currentTarget.value))} />
+    </label>
+  );
+}

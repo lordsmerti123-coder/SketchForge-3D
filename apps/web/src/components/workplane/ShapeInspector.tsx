@@ -202,6 +202,7 @@ export function ShapeInspector({
   onClose,
   onSnapChange,
   onSnapOpenChange,
+  onEditSketch,
 }: {
   shape: WorkplaneShape;
   snap: GridSize;
@@ -211,6 +212,7 @@ export function ShapeInspector({
   onClose: () => void;
   onSnapChange: Dispatch<SetStateAction<GridSize>>;
   onSnapOpenChange: Dispatch<SetStateAction<boolean>>;
+  onEditSketch?: () => void;
 }) {
   const solidColor = shape.hole ? fallbackSolidColor(shape) : shape.color;
   const locked = Boolean(shape.locked);
@@ -300,6 +302,12 @@ export function ShapeInspector({
             </label>
           </div>
         </div>
+      ) : null}
+
+      {shape.sketchProfile && onEditSketch ? (
+        <button className="edit-sketch-button" type="button" disabled={locked} onClick={onEditSketch}>
+          Edit sketch
+        </button>
       ) : null}
 
       <div className="property-card">
