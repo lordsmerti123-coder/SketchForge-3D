@@ -47,12 +47,169 @@ No login. No server project storage. No heavyweight CAD install just to make a u
 
 ![SketchForge editor demo preview](docs/media/videos/01-create-and-edit-block-preview.gif)
 
-## Quick Start
+## Getting Started
 
-Requirements:
+There are three common ways to run SketchForge. If you are not sure which one to choose, use Docker.
+
+| Path | Best for | Difficulty |
+| --- | --- | --- |
+| Docker / FabLab server | Teachers, classrooms, shared computers, local network hosting | Recommended |
+| Local development | Developers who want to edit the code | Medium |
+| Manual static hosting | Server admins who cannot use Docker | Advanced |
+
+SketchForge is local-first in all three modes. The app files may be served from a computer or server, but projects stay in each user's browser storage. STL and OBJ exports download through the user's browser. SketchForge does not upload models to a SketchForge cloud service.
+
+### Download the Project
+
+If you already know Git:
+
+```bash
+git clone https://github.com/Formsmith746/SketchForge-3D.git
+cd SketchForge-3D
+```
+
+If you do not know Git yet:
+
+1. Open the GitHub page for this repository.
+2. Press the green **Code** button.
+3. Press **Download ZIP**.
+4. Extract the ZIP somewhere easy to find, such as your Desktop.
+5. Open a terminal in the extracted folder.
+
+On Windows, you can open PowerShell in the folder by opening the folder, clicking the address bar, typing `powershell`, and pressing Enter.
+
+## Docker / FabLab Server (Recommended)
+
+Docker is the easiest way to run SketchForge for a classroom, workshop, or FabLab. It packages the build tools, static website, Nginx server, health check, and restart behavior together.
+
+### What You Need
+
+- Docker Desktop on Windows or macOS, or Docker Engine on Linux
+- Docker Compose, which is included with modern Docker Desktop
+- This repository downloaded on the server computer
+
+If `docker` is not recognized, install Docker Desktop and open it once before running the commands.
+
+### Start SketchForge
+
+From the SketchForge project folder, run:
+
+```bash
+docker compose -f deploy/docker/compose.yaml up --build -d
+```
+
+The first start can take a few minutes because Docker builds the app. After it finishes, open this on the same computer:
+
+```text
+http://127.0.0.1:3000/
+```
+
+If that works, SketchForge is running.
+
+### Let Other Computers Join
+
+Other computers on the same Wi-Fi or LAN need the server computer's local IP address.
+
+On Windows PowerShell, run:
+
+```powershell
+ipconfig
+```
+
+Look for the `IPv4 Address`, for example:
+
+```text
+192.168.1.25
+```
+
+Then other computers can open:
+
+```text
+http://192.168.1.25:3000/
+```
+
+Use your own IP address, not the example one.
+
+### Use a Different Port
+
+If port `3000` is already being used, choose another port such as `8080`.
+
+Windows PowerShell:
+
+```powershell
+$env:SKETCHFORGE_PORT = "8080"
+docker compose -f deploy/docker/compose.yaml up --build -d
+```
+
+Linux or macOS:
+
+```bash
+SKETCHFORGE_PORT=8080 docker compose -f deploy/docker/compose.yaml up --build -d
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8080/
+```
+
+### Stop SketchForge
+
+```bash
+docker compose -f deploy/docker/compose.yaml down
+```
+
+### Update SketchForge Later
+
+If you used Git:
+
+```bash
+git pull
+docker compose -f deploy/docker/compose.yaml up --build -d
+```
+
+If you downloaded the ZIP, download the newest ZIP, extract it, and run:
+
+```bash
+docker compose -f deploy/docker/compose.yaml up --build -d
+```
+
+### Docker Troubleshooting
+
+- **`docker` is not recognized**: install Docker Desktop, open it, and try again.
+- **Docker says the daemon is not running**: Docker Desktop is closed or still starting.
+- **Port already in use**: use another port, for example `8080`.
+- **Other computers cannot connect**: check that they are on the same network and that the server firewall allows the chosen port.
+- **The page opens but old files appear**: stop and rebuild with `docker compose -f deploy/docker/compose.yaml down`, then `docker compose -f deploy/docker/compose.yaml up --build -d`.
+
+If you already have Node.js installed, the repository also includes shortcuts:
+
+```bash
+npm run docker:up
+npm run docker:down
+```
+
+## Local Development
+
+Use this path if you want to edit SketchForge's code.
+
+### What You Need
 
 - Node.js 20 or newer
-- npm
+- npm, included with Node.js
+
+Check your versions:
+
+```bash
+node -v
+npm -v
+```
+
+If those commands do not work, install Node.js from the official Node.js website and reopen your terminal.
+
+### Install and Run
+
+From the SketchForge project folder:
 
 ```bash
 npm install
@@ -65,71 +222,55 @@ Open:
 http://127.0.0.1:3000/
 ```
 
-## Docker / FabLab Server (Recommended)
+Leave the terminal open while you use the app. To stop the development server, press `Ctrl+C` in the terminal.
 
-The Docker image contains a static SketchForge build served by Nginx. Projects stay in each user's browser; STL and OBJ files download through that browser. The container does not receive or store project files.
+### Useful Developer Commands
 
-Docker is the recommended server setup because it packages the correct Node build environment, static app, Nginx configuration, health check, and restart policy together. It is easier to reproduce and update than configuring each part by hand.
-
-Requirements:
-
-- Docker Engine with Docker Compose
-
-Build and start SketchForge:
+Run TypeScript checks:
 
 ```bash
-npm run docker:up
+npm run typecheck
 ```
 
-Open it on the server:
-
-```text
-http://127.0.0.1:3000/
-```
-
-Other computers on the same network can use the server's LAN address:
-
-```text
-http://SERVER_IP:3000/
-```
-
-To use another host port:
+Run tests:
 
 ```bash
-SKETCHFORGE_PORT=8080 npm run docker:up
+npm run test
 ```
 
-On PowerShell:
-
-```powershell
-$env:SKETCHFORGE_PORT = "8080"
-npm run docker:up
-```
-
-Stop the server with:
+Create a production build:
 
 ```bash
-npm run docker:down
+npm run build
 ```
 
-### Manual Static Deployment (Advanced)
+Build a static export:
 
-This is the harder alternative for servers where Docker cannot be used. The administrator must install and maintain Node.js, npm, Nginx or another static web server, firewall access, startup behavior, and future updates separately.
+```bash
+npm run export
+```
 
-Requirements:
+## Manual Static Deployment (Advanced)
+
+Use this only if Docker is not allowed on your server. This path is harder because you must install and maintain Node.js, npm, a static web server, firewall rules, startup behavior, and future updates yourself.
+
+### What You Need
 
 - Node.js 20 or newer
 - npm
 - Nginx, Apache, Caddy, or another static web server
+- permission to open a network port on the server firewall
 
-Create the static build on Linux or macOS:
+### Build the Static Files
+
+Linux or macOS:
 
 ```bash
 npm ci
 STATIC_EXPORT=true npm run build
 ```
 
-Create it with PowerShell on Windows:
+Windows PowerShell:
 
 ```powershell
 npm ci
@@ -138,29 +279,25 @@ npm run build
 Remove-Item Env:STATIC_EXPORT
 ```
 
-The deployable files are generated in `apps/web/out`. Configure the web server to serve that directory and fall back to `index.html` for unknown application paths. [`deploy/docker/nginx.conf`](deploy/docker/nginx.conf) is the configuration used by the Docker image and can be adapted for a manual Nginx installation.
+The deployable files are created in:
 
-The administrator must also open the chosen LAN port in the server firewall and arrange for the web server to start automatically after a reboot. For each SketchForge update, pull the new source, install dependencies, rebuild `apps/web/out`, replace the served files, and reload the web server.
-
-## Development
-
-```bash
-npm run typecheck
+```text
+apps/web/out
 ```
 
-Run TypeScript checks.
+Configure your web server to serve `apps/web/out`.
 
-```bash
-npm run build
+For single-page app routing, unknown paths should fall back to:
+
+```text
+index.html
 ```
 
-Create a production build.
+The Docker Nginx config is a good reference:
 
-```bash
-npm run export
-```
+[`deploy/docker/nginx.conf`](deploy/docker/nginx.conf)
 
-Build with static export mode enabled.
+For each update, pull or download the new source, install dependencies, rebuild `apps/web/out`, replace the served files, and reload the web server.
 
 ## Project Layout
 
