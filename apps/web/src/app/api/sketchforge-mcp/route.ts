@@ -8,7 +8,6 @@ import {
   registerSketchForgeMcpEditor,
 } from "@/lib/sketchforgeMcpStore";
 
-export const dynamic = "force-dynamic";
 export const revalidate = false;
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
