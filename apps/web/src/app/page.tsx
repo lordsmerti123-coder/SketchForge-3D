@@ -10,6 +10,7 @@ import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/typ
 
 type AppView = "dashboard" | "editor";
 type ViewMode = "grid" | "list";
+type DashboardSection = "home" | "challenges";
 type DownloadMode = "browser" | "folder";
 
 type DashboardProject = {
@@ -244,6 +245,7 @@ export default function Home() {
   const [editorStarted, setEditorStarted] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [projects, setProjects] = useState<DashboardProject[]>([]);
+  const [dashboardSection, setDashboardSection] = useState<DashboardSection>("home");
   const [query, setQuery] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [sortMode, setSortMode] = useState("recent");
@@ -550,6 +552,7 @@ export default function Home() {
     if (activeProjectId) {
       setProjects((current) => current.map((project) => (project.id === activeProjectId ? { ...project, updatedAt: Date.now() } : project)));
     }
+    setDashboardSection("home");
     setView("dashboard");
     if (typeof window !== "undefined") {
       window.history.replaceState(null, "", "/");
@@ -619,6 +622,7 @@ export default function Home() {
       />
       {view === "dashboard" ? (
         <Dashboard
+          dashboardSection={dashboardSection}
           dashboardNotice={dashboardNotice}
           downloadFolder={downloadFolder}
           downloadMode={downloadMode}
@@ -634,6 +638,11 @@ export default function Home() {
           onDownloadFolderChange={setDownloadFolder}
           onDownloadModeChange={setDownloadMode}
           onImportStl={() => dashboardStlInputRef.current?.click()}
+          onChallenges={() => {
+            setDashboardSection("challenges");
+            setDashboardNotice("");
+          }}
+          onDashboardHome={() => setDashboardSection("home")}
           onOpenProject={openEditor}
           onOpenSettings={() => setSettingsOpen(true)}
           onQueryChange={setQuery}
@@ -664,6 +673,7 @@ export default function Home() {
 }
 
 function Dashboard({
+  dashboardSection,
   dashboardNotice,
   downloadFolder,
   downloadMode,
@@ -679,6 +689,8 @@ function Dashboard({
   onDownloadFolderChange,
   onDownloadModeChange,
   onImportStl,
+  onChallenges,
+  onDashboardHome,
   onOpenProject,
   onOpenSettings,
   onQueryChange,
@@ -687,6 +699,7 @@ function Dashboard({
   onViewModeChange,
   onWorkspace,
 }: {
+  dashboardSection: DashboardSection;
   dashboardNotice: string;
   downloadFolder: string;
   downloadMode: DownloadMode;
@@ -702,6 +715,8 @@ function Dashboard({
   onDownloadFolderChange: (value: string) => void;
   onDownloadModeChange: (value: DownloadMode) => void;
   onImportStl: () => void;
+  onChallenges: () => void;
+  onDashboardHome: () => void;
   onOpenProject: (projectId: string) => void;
   onOpenSettings: () => void;
   onQueryChange: (value: string) => void;
@@ -766,9 +781,13 @@ function Dashboard({
       <div className="dashboard-layout">
         <aside className="dashboard-sidebar">
           <div className="dashboard-nav-stack">
-            <button className="dashboard-nav-item active" type="button" aria-label="Home" title="Home">
+            <button className={`dashboard-nav-item ${dashboardSection === "home" ? "active" : ""}`} type="button" aria-label="Home" title="Home" onClick={onDashboardHome}>
               <HomeIcon size={20} />
               <span>Home</span>
+            </button>
+            <button className={`dashboard-nav-item ${dashboardSection === "challenges" ? "active" : ""}`} type="button" aria-label="Challenges" title="Challenges" onClick={onChallenges}>
+              <SlidersHorizontal size={20} />
+              <span>Challenges</span>
             </button>
           </div>
           <button className="dashboard-nav-item dashboard-settings-button" type="button" aria-label="Download settings" title="Download settings" onClick={onOpenSettings}>
@@ -777,106 +796,114 @@ function Dashboard({
           </button>
         </aside>
 
-        <section className="dashboard-main" aria-label="Dashboard">
-          <div className="dashboard-actions-band">
-            <button className="dashboard-action-tile create" type="button" onClick={onCreate}>
-              <span className="dashboard-action-icon">
-                <Plus size={25} strokeWidth={2.8} />
-              </span>
-              <span>Create new 3D design</span>
-            </button>
-            <button className="dashboard-action-tile" type="button" onClick={onImportStl}>
-              <span className="dashboard-action-icon">
-                <FileUp size={24} strokeWidth={2.4} />
-              </span>
-              <span>Import STL</span>
-            </button>
-            <button className="dashboard-action-tile" type="button" onClick={onWorkspace}>
-              <span className="dashboard-action-icon">
-                <Clock3 size={24} strokeWidth={2.4} />
-              </span>
-              <span>Continue workplane</span>
-            </button>
-          </div>
-          {dashboardNotice ? (
-            <div className="dashboard-import-notice" role="status">
-              {dashboardNotice}
-            </div>
-          ) : null}
-
-          <div className="dashboard-section-header">
-            <div>
-              <h1>Projects</h1>
-              <span>{projects.length} visible</span>
-            </div>
-            <div className="dashboard-controls">
-              <label className="dashboard-select">
-                <SlidersHorizontal size={17} />
-                <select value={sortMode} onChange={(event) => onSortModeChange(event.currentTarget.value)} aria-label="Sort projects">
-                  <option value="recent">Recent</option>
-                  <option value="name">Name</option>
-                </select>
-              </label>
-              <div className="dashboard-segmented" aria-label="Project view">
-                <button className={viewMode === "grid" ? "active" : ""} type="button" aria-label="Grid view" onClick={() => onViewModeChange("grid")}>
-                  <Grid3X3 size={17} />
-                </button>
-                <button className={viewMode === "list" ? "active" : ""} type="button" aria-label="List view" onClick={() => onViewModeChange("list")}>
-                  <List size={18} />
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {projects.length > 0 ? (
-            <div className={viewMode === "grid" ? "project-grid" : "project-list"}>
-              {projects.map((project) => (
-                <article className="project-card" key={project.id}>
-                  <button className="project-card-open" type="button" onClick={() => onOpenProject(project.id)}>
-                    <ProjectPreview accent={project.accent} thumbnailUrl={project.thumbnailUrl} />
-                    <span className="project-card-title">{project.name}</span>
-                    <span className="project-card-meta">
-                      {formatUpdated(project.updatedAt)} - {project.shapes} shapes
-                    </span>
-                  </button>
-                  <button
-                    className="project-menu-trigger"
-                    type="button"
-                    aria-label={`Project options for ${project.name}`}
-                    aria-expanded={openProjectMenuId === project.id}
-                    title="Project options"
-                    onClick={() => setOpenProjectMenuId((current) => (current === project.id ? null : project.id))}
-                  >
-                    <EllipsisVertical size={19} strokeWidth={2.5} />
-                  </button>
-                  {openProjectMenuId === project.id ? (
-                    <div className="project-card-menu" role="menu" aria-label={`Options for ${project.name}`}>
-                      <button type="button" role="menuitem" onClick={() => startProjectRename(project)}>
-                        <Pencil size={16} />
-                        <span>Rename</span>
-                      </button>
-                      <button
-                        className="delete"
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setOpenProjectMenuId(null);
-                          setProjectPendingDeleteId(project.id);
-                        }}
-                      >
-                        <Trash2 size={16} />
-                        <span>Delete</span>
-                      </button>
-                    </div>
-                  ) : null}
-                </article>
-              ))}
+        <section className="dashboard-main" aria-label={dashboardSection === "challenges" ? "Challenges" : "Dashboard"}>
+          {dashboardSection === "challenges" ? (
+            <div className="dashboard-coming-soon" role="status">
+              <strong>Coming soon</strong>
             </div>
           ) : (
-            <div className="project-empty">
-              <strong>No projects yet</strong>
-              <span>Create a 3D design and it will appear here.</span>
-            </div>
+            <>
+              <div className="dashboard-actions-band">
+                <button className="dashboard-action-tile create" type="button" onClick={onCreate}>
+                  <span className="dashboard-action-icon">
+                    <Plus size={25} strokeWidth={2.8} />
+                  </span>
+                  <span>Create new 3D design</span>
+                </button>
+                <button className="dashboard-action-tile" type="button" onClick={onImportStl}>
+                  <span className="dashboard-action-icon">
+                    <FileUp size={24} strokeWidth={2.4} />
+                  </span>
+                  <span>Import STL</span>
+                </button>
+                <button className="dashboard-action-tile" type="button" onClick={onWorkspace}>
+                  <span className="dashboard-action-icon">
+                    <Clock3 size={24} strokeWidth={2.4} />
+                  </span>
+                  <span>Continue workplane</span>
+                </button>
+              </div>
+              {dashboardNotice ? (
+                <div className="dashboard-import-notice" role="status">
+                  {dashboardNotice}
+                </div>
+              ) : null}
+
+              <div className="dashboard-section-header">
+                <div>
+                  <h1>Projects</h1>
+                  <span>{projects.length} visible</span>
+                </div>
+                <div className="dashboard-controls">
+                  <label className="dashboard-select">
+                    <SlidersHorizontal size={17} />
+                    <select value={sortMode} onChange={(event) => onSortModeChange(event.currentTarget.value)} aria-label="Sort projects">
+                      <option value="recent">Recent</option>
+                      <option value="name">Name</option>
+                    </select>
+                  </label>
+                  <div className="dashboard-segmented" aria-label="Project view">
+                    <button className={viewMode === "grid" ? "active" : ""} type="button" aria-label="Grid view" onClick={() => onViewModeChange("grid")}>
+                      <Grid3X3 size={17} />
+                    </button>
+                    <button className={viewMode === "list" ? "active" : ""} type="button" aria-label="List view" onClick={() => onViewModeChange("list")}>
+                      <List size={18} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {projects.length > 0 ? (
+                <div className={viewMode === "grid" ? "project-grid" : "project-list"}>
+                  {projects.map((project) => (
+                    <article className="project-card" key={project.id}>
+                      <button className="project-card-open" type="button" onClick={() => onOpenProject(project.id)}>
+                        <ProjectPreview accent={project.accent} thumbnailUrl={project.thumbnailUrl} />
+                        <span className="project-card-title">{project.name}</span>
+                        <span className="project-card-meta">
+                          {formatUpdated(project.updatedAt)} - {project.shapes} shapes
+                        </span>
+                      </button>
+                      <button
+                        className="project-menu-trigger"
+                        type="button"
+                        aria-label={`Project options for ${project.name}`}
+                        aria-expanded={openProjectMenuId === project.id}
+                        title="Project options"
+                        onClick={() => setOpenProjectMenuId((current) => (current === project.id ? null : project.id))}
+                      >
+                        <EllipsisVertical size={19} strokeWidth={2.5} />
+                      </button>
+                      {openProjectMenuId === project.id ? (
+                        <div className="project-card-menu" role="menu" aria-label={`Options for ${project.name}`}>
+                          <button type="button" role="menuitem" onClick={() => startProjectRename(project)}>
+                            <Pencil size={16} />
+                            <span>Rename</span>
+                          </button>
+                          <button
+                            className="delete"
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setOpenProjectMenuId(null);
+                              setProjectPendingDeleteId(project.id);
+                            }}
+                          >
+                            <Trash2 size={16} />
+                            <span>Delete</span>
+                          </button>
+                        </div>
+                      ) : null}
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="project-empty">
+                  <strong>No projects yet</strong>
+                  <span>Create a 3D design and it will appear here.</span>
+                </div>
+              )}
+            </>
           )}
         </section>
       </div>

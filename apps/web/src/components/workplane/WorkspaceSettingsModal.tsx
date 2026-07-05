@@ -2,6 +2,7 @@
 
 import { Grid3X3, Palette, Ruler, X } from "lucide-react";
 import { useState, type CSSProperties } from "react";
+import { normalizeScaleForUnits, scaleOptionsForUnits, WORKSPACE_UNIT_OPTIONS } from "@/lib/measurementUnits";
 import { DEFAULT_WORKPLANE_WORKSPACE } from "@/lib/workplaneSettings";
 import type { GridSize, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
@@ -51,9 +52,12 @@ export function WorkspaceSettingsModal({
 }) {
   const [defaultSaved, setDefaultSaved] = useState(false);
   const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>("appearance");
+  const scaleOptions = scaleOptionsForUnits(workspace.units);
+  const scaleValue = normalizeScaleForUnits(workspace.units, workspace.scale);
   const patchWorkspace = (patch: Partial<WorkspaceSettings>) => {
     setDefaultSaved(false);
-    onWorkspaceChange({ ...workspace, ...patch });
+    const next = { ...workspace, ...patch };
+    onWorkspaceChange({ ...next, scale: normalizeScaleForUnits(next.units, next.scale) });
   };
   const setDimension = (key: "width" | "depth", value: string) => {
     const next = clamp(Number.parseFloat(value) || DEFAULT_WORKPLANE_WORKSPACE[key], MIN_WORKSPACE_SIZE, MAX_WORKSPACE_SIZE);
@@ -151,13 +155,13 @@ export function WorkspaceSettingsModal({
                   <WorkspaceSelect
                     label="Units"
                     value={workspace.units}
-                    options={["Metric (Default)", "Imperial", "Bricks"]}
+                    options={WORKSPACE_UNIT_OPTIONS}
                     onChange={(units) => patchWorkspace({ units })}
                   />
                   <WorkspaceSelect
                     label="Scale"
-                    value={workspace.scale}
-                    options={["1:1 (millimeters)", "1:10 (centimeters)", "1:100 (meters)", "1:1000 (meters)"]}
+                    value={scaleValue}
+                    options={scaleOptions}
                     onChange={(scale) => patchWorkspace({ scale })}
                   />
                   <WorkspaceSelect

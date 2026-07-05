@@ -118,6 +118,15 @@ export type CadBrepFrame = {
   width: number;
   depth: number;
   height: number;
+  sourceTransform?: number[];
+};
+
+export type CadPrimitiveFrame = {
+  kind: "box";
+  width: number;
+  depth: number;
+  height: number;
+  frame: CadBrepFrame;
 };
 
 export type WorkplaneShape = {
@@ -175,6 +184,7 @@ export type WorkplaneShape = {
   edgeResizeMode?: "scale" | "preserve";
   cadBrep?: string;
   cadBrepFrame?: CadBrepFrame;
+  cadPrimitiveFrame?: CadPrimitiveFrame;
   groupedShapes?: WorkplaneShape[];
   groupedBaseWidth?: number;
   groupedBaseDepth?: number;

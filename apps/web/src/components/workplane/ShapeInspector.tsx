@@ -1,10 +1,11 @@
 "use client";
 
-import { ChevronDown, ChevronUp, LockKeyhole, LockKeyholeOpen } from "lucide-react";
+import { ChevronDown, ChevronUp, LockKeyhole, LockKeyholeOpen, Split } from "lucide-react";
 import { useEffect, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import { ToolbarHideSelectedIcon } from "@/components/icons";
+import { displayStepFromMillimeters, displayToMillimeters, formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
 import { fallbackSolidColor, resizedShapeSize, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
-import type { GridSize, MeasurementAccuracy, WorkplaneShape } from "@/types/sketchforge";
+import type { GridSize, MeasurementAccuracy, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 const GRID_SIZES: GridSize[] = ["Off", "0.1 mm", "0.25 mm", "0.5 mm", "1.0 mm", "2.0 mm", "5.0 mm", "Brick"];
 const MIN_SHAPE_SIZE = 0.01;
@@ -73,9 +74,13 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function formatPanelNumber(value: number, accuracy: MeasurementAccuracy) {
-  const zeroThreshold = 0.5 * 10 ** -accuracy;
-  return (Math.abs(value) < zeroThreshold ? 0 : value).toFixed(accuracy);
+function formatPropertyNumber(value: number, accuracy: MeasurementAccuracy, step: number) {
+  if (step >= 1) return String(Math.round(value));
+  return formatMeasurementNumber(value, accuracy, step);
+}
+
+function propertyUsesLengthUnit(label: string) {
+  return ["Radius", "Length", "Width", "Height", "Bevel", "Top Radius", "Base Radius", "Thickness"].includes(label);
 }
 
 function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdate): ShapePropertyConfig[] {
@@ -92,8 +97,6 @@ function getShapeProperties(shape: WorkplaneShape, onUpdate: ShapeInspectorUpdat
 
   if (shape.kind === "box") {
     return [
-      { label: "Radius", value: shape.radius ?? 0, min: 0, max: 10, onChange: (radius) => onUpdate({ radius }) },
-      { label: "Steps", value: shape.steps ?? 10, min: 1, max: 64, step: 1, onChange: (steps) => onUpdate({ steps: Math.round(steps) }) },
       { label: "Length", value: depth, min: MIN_SHAPE_SIZE, max: 160, onChange: setDepth },
       { label: "Width", value: width, min: MIN_SHAPE_SIZE, max: 160, onChange: setWidth },
       { label: "Height", value: shape.height, min: MIN_SHAPE_SIZE, max: 160, onChange: setHeight },
@@ -197,22 +200,26 @@ export function ShapeInspector({
   shape,
   snap,
   snapOpen,
-  accuracy,
+  workspace,
   onUpdate,
   onClose,
   onSnapChange,
   onSnapOpenChange,
   onEditSketch,
+  canSeparateParts = false,
+  onSeparateParts,
 }: {
   shape: WorkplaneShape;
   snap: GridSize;
   snapOpen: boolean;
-  accuracy: MeasurementAccuracy;
+  workspace: WorkplaneWorkspaceSettings;
   onUpdate: ShapeInspectorUpdate;
   onClose: () => void;
   onSnapChange: Dispatch<SetStateAction<GridSize>>;
   onSnapOpenChange: Dispatch<SetStateAction<boolean>>;
   onEditSketch?: () => void;
+  canSeparateParts?: boolean;
+  onSeparateParts?: () => void;
 }) {
   const solidColor = shape.hole ? fallbackSolidColor(shape) : shape.color;
   const locked = Boolean(shape.locked);
@@ -310,6 +317,13 @@ export function ShapeInspector({
         </button>
       ) : null}
 
+      {canSeparateParts && onSeparateParts ? (
+        <button className="inspector-action-button" type="button" disabled={locked} onClick={onSeparateParts}>
+          <Split size={17} strokeWidth={2.5} />
+          <span>Separate Parts</span>
+        </button>
+      ) : null}
+
       <div className="property-card">
         <button
           className="property-card-header"
@@ -330,7 +344,7 @@ export function ShapeInspector({
               if (property.type === "select") {
                 return <SelectProperty key={property.label} {...property} disabled={locked} />;
               }
-              return <RangeProperty key={property.label} {...property} accuracy={accuracy} disabled={locked} />;
+              return <RangeProperty key={property.label} {...property} workspace={workspace} disabled={locked} />;
             })}
           </div>
         ) : null}
@@ -386,76 +400,81 @@ function RangeProperty({
   min,
   max,
   step = 0.01,
-  accuracy,
+  workspace,
   disabled,
   onChange,
-}: RangePropertyConfig & { accuracy: MeasurementAccuracy; disabled?: boolean }) {
+}: RangePropertyConfig & { workspace: WorkplaneWorkspaceSettings; disabled?: boolean }) {
   const allowsAboveSliderMax = label === "Length" || label === "Width" || label === "Height";
+  const isLength = propertyUsesLengthUnit(label);
+  const accuracy = workspace.accuracy;
   const actualValue = Math.max(min, Number.isFinite(value) ? value : min);
-  const sliderValue = clamp(actualValue, min, max);
-  const position = ((sliderValue - min) / Math.max(1, max - min)) * 100;
+  const controlValue = isLength ? millimetersToDisplay(actualValue, workspace) : actualValue;
+  const controlMin = isLength ? millimetersToDisplay(min, workspace) : min;
+  const controlMax = isLength ? millimetersToDisplay(max, workspace) : max;
+  const controlStep = isLength ? displayStepFromMillimeters(step, workspace) : step;
+  const sliderValue = clamp(controlValue, controlMin, controlMax);
+  const position = ((sliderValue - controlMin) / Math.max(Number.EPSILON, controlMax - controlMin)) * 100;
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(formatPanelNumber(actualValue, accuracy));
+  const [draft, setDraft] = useState(formatPropertyNumber(controlValue, accuracy, controlStep));
+  const unit = isLength ? lengthDisplayUnit(workspace).label : null;
   useEffect(() => {
     if (!editing) {
-      setDraft(formatPanelNumber(actualValue, accuracy));
+      setDraft(formatPropertyNumber(controlValue, accuracy, controlStep));
     }
-  }, [accuracy, actualValue, editing]);
+  }, [accuracy, controlStep, controlValue, editing]);
+  const toModelValue = (nextValue: number) => isLength ? displayToMillimeters(nextValue, workspace) : nextValue;
   const commitDraft = () => {
     const next = Number(draft);
-    const finiteNext = Number.isFinite(next) ? next : actualValue;
-    onChange(allowsAboveSliderMax ? Math.max(min, finiteNext) : clamp(finiteNext, min, max));
+    const finiteNext = Number.isFinite(next) ? next : controlValue;
+    const nextModelValue = toModelValue(finiteNext);
+    onChange(allowsAboveSliderMax ? Math.max(min, nextModelValue) : clamp(nextModelValue, min, max));
     setEditing(false);
+  };
+  const handleSliderChange = (nextValue: number) => {
+    const next = clamp(Number.isFinite(nextValue) ? nextValue : controlMin, controlMin, controlMax);
+    onChange(clamp(toModelValue(next), min, max));
+    setDraft(formatPropertyNumber(next, accuracy, controlStep));
   };
   return (
     <label className="range-property" style={{ "--slider-pos": `${position}%` } as CSSProperties}>
-      <span>{label}</span>
-      <div className="range-control">
-        {editing ? (
+      <span className="range-property-header">
+        <span className="range-property-name">{label}</span>
+        <span className="range-value-control">
           <input
-            className="range-value-input"
             type="number"
-            min={min}
-            max={allowsAboveSliderMax ? undefined : max}
-            step={step}
-            value={draft}
-            autoFocus
+            min={controlMin}
+            max={allowsAboveSliderMax ? undefined : controlMax}
+            step={controlStep}
+            value={editing ? draft : formatPropertyNumber(controlValue, accuracy, controlStep)}
+            disabled={disabled}
+            inputMode="decimal"
+            onFocus={() => {
+              setDraft(formatPropertyNumber(controlValue, accuracy, controlStep));
+              setEditing(true);
+            }}
             onChange={(event) => setDraft(event.currentTarget.value)}
             onBlur={commitDraft}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.currentTarget.blur();
               } else if (event.key === "Escape") {
-                setDraft(formatPanelNumber(actualValue, accuracy));
+                setDraft(formatPropertyNumber(controlValue, accuracy, controlStep));
                 setEditing(false);
               }
             }}
           />
-        ) : (
-          <output
-            onDoubleClick={(event) => {
-              if (disabled) {
-                return;
-              }
-              event.preventDefault();
-              setDraft(formatPanelNumber(actualValue, accuracy));
-              setEditing(true);
-            }}
-          >
-            {formatPanelNumber(actualValue, accuracy)}
-          </output>
-        )}
+          {unit ? <span className="range-value-unit">{unit}</span> : null}
+        </span>
+      </span>
+      <div className="range-control">
         <input
           type="range"
-          min={min}
-          max={max}
-          step={step}
+          min={controlMin}
+          max={controlMax}
+          step={controlStep}
           value={sliderValue}
           disabled={disabled}
-          onChange={(event) => {
-            const next = Number(event.currentTarget.value);
-            onChange(clamp(Number.isFinite(next) ? next : min, min, max));
-          }}
+          onChange={(event) => handleSliderChange(Number(event.currentTarget.value))}
         />
       </div>
     </label>

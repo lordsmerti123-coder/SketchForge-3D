@@ -1,7 +1,128 @@
 "use client";
 
-import { Check, LoaderCircle, X } from "lucide-react";
+import { useEffect, useState, type CSSProperties } from "react";
+import { Check, LoaderCircle, Minus, Plus, RotateCcw, X } from "lucide-react";
+import { displayStepFromMillimeters, displayToMillimeters, formatMeasurementNumber, lengthDisplayUnit, millimetersToDisplay } from "@/lib/measurementUnits";
 import type { CadModifierKind, CadModifierQuality } from "@/lib/cadModifierTypes";
+import type { WorkplaneWorkspaceSettings } from "@/types/sketchforge";
+
+const MIN_EDGE_MODIFIER_AMOUNT = 0.001;
+const EDGE_MODIFIER_AMOUNT_STEP = 0.001;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function formatSliderValue(value: number, accuracy: WorkplaneWorkspaceSettings["accuracy"], step: number) {
+  if (step >= 1) return String(Math.round(value));
+  return formatMeasurementNumber(value, accuracy, step);
+}
+
+type EdgeHistoryOption = {
+  id: string;
+  label: string;
+  targetName: string;
+  removesNewerCount: number;
+};
+
+function EdgeModifierSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  unit,
+  workspace,
+  length = false,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit?: string;
+  workspace: WorkplaneWorkspaceSettings;
+  length?: boolean;
+  onChange: (value: number) => void;
+}) {
+  const safeMin = Number.isFinite(min) ? min : 0;
+  const safeMax = Math.max(safeMin, Number.isFinite(max) ? max : safeMin);
+  const actualValue = Number.isFinite(value) ? value : safeMin;
+  const controlValue = length ? millimetersToDisplay(actualValue, workspace) : actualValue;
+  const controlMin = length ? millimetersToDisplay(safeMin, workspace) : safeMin;
+  const controlMax = length ? millimetersToDisplay(safeMax, workspace) : safeMax;
+  const controlStep = length ? displayStepFromMillimeters(step, workspace) : step;
+  const sliderValue = clamp(controlValue, controlMin, controlMax);
+  const position = ((sliderValue - controlMin) / Math.max(Number.EPSILON, controlMax - controlMin)) * 100;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(formatSliderValue(controlValue, workspace.accuracy, controlStep));
+  const unitLabel = length ? lengthDisplayUnit(workspace).label : unit;
+
+  useEffect(() => {
+    if (!editing) {
+      setDraft(formatSliderValue(controlValue, workspace.accuracy, controlStep));
+    }
+  }, [controlStep, controlValue, editing, workspace.accuracy]);
+
+  const toModelValue = (nextValue: number) => length ? displayToMillimeters(nextValue, workspace) : nextValue;
+
+  const commitDraft = () => {
+    const next = Number(draft);
+    const finiteNext = Number.isFinite(next) ? next : controlValue;
+    onChange(clamp(toModelValue(finiteNext), safeMin, safeMax));
+    setEditing(false);
+  };
+
+  const handleSliderChange = (nextValue: number) => {
+    const next = clamp(Number.isFinite(nextValue) ? nextValue : controlMin, controlMin, controlMax);
+    onChange(clamp(toModelValue(next), safeMin, safeMax));
+    setDraft(formatSliderValue(next, workspace.accuracy, controlStep));
+  };
+
+  return (
+    <label className="edge-modifier-field edge-modifier-slider range-property" style={{ "--slider-pos": `${position}%` } as CSSProperties}>
+      <span className="range-property-header">
+        <span className="range-property-name">{label}</span>
+        <span className="range-value-control">
+          <input
+            type="number"
+            min={controlMin}
+            max={controlMax}
+            step={controlStep}
+            value={editing ? draft : formatSliderValue(controlValue, workspace.accuracy, controlStep)}
+            inputMode="decimal"
+            onFocus={() => {
+              setDraft(formatSliderValue(controlValue, workspace.accuracy, controlStep));
+              setEditing(true);
+            }}
+            onChange={(event) => setDraft(event.currentTarget.value)}
+            onBlur={commitDraft}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
+              } else if (event.key === "Escape") {
+                setDraft(formatSliderValue(controlValue, workspace.accuracy, controlStep));
+                setEditing(false);
+              }
+            }}
+          />
+          {unitLabel ? <span className="range-value-unit">{unitLabel}</span> : null}
+        </span>
+      </span>
+      <div className="range-control">
+        <input
+          type="range"
+          min={controlMin}
+          max={controlMax}
+          step={controlStep}
+          value={sliderValue}
+          onChange={(event) => handleSliderChange(Number(event.currentTarget.value))}
+        />
+      </div>
+    </label>
+  );
+}
 
 export function EdgeModifierPanel({
   kind,
@@ -10,12 +131,14 @@ export function EdgeModifierPanel({
   chamferAngle,
   quality,
   sharpAngle,
+  workspace,
   tangentChain,
   preserveEdgeSize,
   targetName,
   groupedCount,
   appliedFeatureCount,
   reversibleFeatureCount,
+  historyOptions,
   selectedCount,
   availableCount,
   busy,
@@ -28,7 +151,7 @@ export function EdgeModifierPanel({
   onPreserveEdgeSizeChange,
   onSelectAll,
   onClear,
-  onRemoveLastFeature,
+  onRemoveFeature,
   onApply,
   onCancel,
 }: {
@@ -38,12 +161,14 @@ export function EdgeModifierPanel({
   chamferAngle: number;
   quality: CadModifierQuality;
   sharpAngle: number;
+  workspace: WorkplaneWorkspaceSettings;
   tangentChain: boolean;
   preserveEdgeSize: boolean;
   targetName: string;
   groupedCount: number;
   appliedFeatureCount: number;
   reversibleFeatureCount: number;
+  historyOptions: EdgeHistoryOption[];
   selectedCount: number;
   availableCount: number;
   busy: boolean;
@@ -56,11 +181,14 @@ export function EdgeModifierPanel({
   onPreserveEdgeSizeChange: (value: boolean) => void;
   onSelectAll: () => void;
   onClear: () => void;
-  onRemoveLastFeature: () => void;
+  onRemoveFeature: (id: string) => void;
   onApply: () => void;
   onCancel: () => void;
 }) {
+  const [historyOpen, setHistoryOpen] = useState(false);
   const title = kind === "fillet" ? "Fillet edges" : "Chamfer edges";
+  const amountMin = Math.min(MIN_EDGE_MODIFIER_AMOUNT, Math.max(Number.EPSILON, maxAmount));
+  const amountMax = Math.max(amountMin, maxAmount);
   return (
     <aside className="edge-modifier-panel" aria-label={title}>
       <div className="edge-modifier-header">
@@ -87,55 +215,50 @@ export function EdgeModifierPanel({
 
       {appliedFeatureCount > 0 ? (
         <div className="edge-modifier-history-actions">
-          <button type="button" disabled={reversibleFeatureCount === 0} onClick={onRemoveLastFeature}>
-            Remove last edge feature
+          <button
+            className="edge-modifier-history-toggle"
+            type="button"
+            aria-expanded={historyOpen}
+            disabled={reversibleFeatureCount === 0}
+            onClick={() => setHistoryOpen((open) => !open)}
+          >
+            {historyOpen ? <Minus size={15} /> : <Plus size={15} />}
+            <span>Edge feature history</span>
           </button>
           {reversibleFeatureCount === 0 ? <span>Older edge features do not have stored undo history.</span> : null}
+          {historyOpen && historyOptions.length > 0 ? (
+            <div className="edge-modifier-history-list">
+              {historyOptions.map((option) => (
+                <button className="edge-modifier-history-item" type="button" key={option.id} onClick={() => onRemoveFeature(option.id)}>
+                  <RotateCcw size={14} />
+                  <span>
+                    <strong>{option.label}</strong>
+                    <small>
+                      {option.targetName}
+                      {option.removesNewerCount > 0 ? ` · also removes ${option.removesNewerCount} newer` : ""}
+                    </small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
-      <label className="edge-modifier-field">
-        <span>{kind === "fillet" ? "Radius" : "Distance"}</span>
-        <div className="edge-modifier-value-row">
-          <input
-            type="range"
-            min="0.05"
-            max={Math.max(0.05, maxAmount)}
-            step="0.05"
-            value={Math.min(amount, maxAmount)}
-            onChange={(event) => onAmountChange(Number(event.currentTarget.value))}
-          />
-          <input
-            type="number"
-            min="0.05"
-            max={maxAmount}
-            step="0.05"
-            value={amount}
-            onChange={(event) => onAmountChange(Number(event.currentTarget.value))}
-          />
-          <span>mm</span>
-        </div>
-      </label>
+      <EdgeModifierSlider
+        label={kind === "fillet" ? "Radius" : "Distance"}
+        value={amount}
+        min={amountMin}
+        max={amountMax}
+        step={EDGE_MODIFIER_AMOUNT_STEP}
+        workspace={workspace}
+        length
+        onChange={onAmountChange}
+      />
 
-      {kind === "chamfer" ? (
-        <label className="edge-modifier-field">
-          <span>Angle</span>
-          <div className="edge-modifier-value-row">
-            <input type="range" min="5" max="85" step="1" value={chamferAngle} onChange={(event) => onChamferAngleChange(Number(event.currentTarget.value))} />
-            <input type="number" min="5" max="85" step="1" value={chamferAngle} onChange={(event) => onChamferAngleChange(Number(event.currentTarget.value))} />
-            <span>°</span>
-          </div>
-        </label>
-      ) : null}
+      {kind === "chamfer" ? <EdgeModifierSlider label="Angle" value={chamferAngle} min={5} max={85} step={1} unit="deg" workspace={workspace} onChange={onChamferAngleChange} /> : null}
 
-      <label className="edge-modifier-field">
-        <span>Sharp-edge threshold</span>
-        <div className="edge-modifier-value-row">
-          <input type="range" min="1" max="120" step="1" value={sharpAngle} onChange={(event) => onSharpAngleChange(Number(event.currentTarget.value))} />
-          <input type="number" min="1" max="120" step="1" value={sharpAngle} onChange={(event) => onSharpAngleChange(Number(event.currentTarget.value))} />
-          <span>°</span>
-        </div>
-      </label>
+      <EdgeModifierSlider label="Sharp-edge threshold" value={sharpAngle} min={1} max={120} step={1} unit="deg" workspace={workspace} onChange={onSharpAngleChange} />
 
       <label className="edge-modifier-check">
         <input type="checkbox" checked={tangentChain} onChange={(event) => onTangentChainChange(event.currentTarget.checked)} />

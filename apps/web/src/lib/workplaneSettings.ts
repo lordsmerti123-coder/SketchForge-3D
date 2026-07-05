@@ -1,4 +1,5 @@
 import type { GridSize, MeasurementAccuracy, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
+import { normalizeScaleForUnits } from "@/lib/measurementUnits";
 
 export const DEFAULT_SNAP_GRID: GridSize = "1.0 mm";
 
@@ -42,6 +43,7 @@ export function normalizeSnapGrid(value: unknown, fallback: GridSize = DEFAULT_S
 
 export function normalizeWorkspaceSettings(value: unknown, fallback: WorkplaneWorkspaceSettings = DEFAULT_WORKPLANE_WORKSPACE): WorkplaneWorkspaceSettings {
   const candidate = value && typeof value === "object" ? (value as Partial<WorkplaneWorkspaceSettings>) : {};
+  const units = stringOrDefault(candidate.units, fallback.units);
   return {
     width: numberOrDefault(candidate.width, fallback.width),
     depth: numberOrDefault(candidate.depth, fallback.depth),
@@ -53,8 +55,8 @@ export function normalizeWorkspaceSettings(value: unknown, fallback: WorkplaneWo
     showGrid: booleanOrDefault(candidate.showGrid, fallback.showGrid),
     cruiseShapes: booleanOrDefault(candidate.cruiseShapes, fallback.cruiseShapes),
     zoomSpeed: numberOrDefault(candidate.zoomSpeed, fallback.zoomSpeed),
-    units: stringOrDefault(candidate.units, fallback.units),
-    scale: stringOrDefault(candidate.scale, fallback.scale),
+    units,
+    scale: normalizeScaleForUnits(units, stringOrDefault(candidate.scale, fallback.scale)),
     accuracy: accuracyOrDefault(candidate.accuracy, fallback.accuracy),
   };
 }

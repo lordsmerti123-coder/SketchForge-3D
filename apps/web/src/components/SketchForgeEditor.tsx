@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, Check, Download, Eraser, ImagePlus, ListPlus, MousePointer2, PencilLine, Ruler, Spline, Waves, X } from "lucide-react";
+import { Check, Download, X } from "lucide-react";
 import type manifoldModule from "manifold-3d";
 import type { ManifoldToplevel } from "manifold-3d";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -62,11 +62,21 @@ import {
   shapeWidth,
   workplaneShapesEqual,
 } from "@/lib/workplaneShapes";
+import { bakeCadMetadataForShapeTransform, cadBrepTransformForShape, cadModifierPrimitiveForAnalyticBox, cadModifierPrimitiveForBakedShape } from "@/lib/cadBakeMetadata";
 import { createLocalId } from "@/lib/localIds";
 import { projectExportFileName } from "@/lib/exportNames";
 import { makeShapeFromAsset, sceneShape, toolbarShapeAssets, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
-import type { CadModifierDisplayEdge, CadModifierEdge, CadModifierKind, CadModifierMeshPart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse } from "@/lib/cadModifierTypes";
+import { normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
+import {
+  SKETCHFORGE_MCP_POLL_MS,
+  SKETCHFORGE_MCP_ROUTE,
+  type SketchForgeMcpCommand,
+  type SketchForgeMcpSceneSummary,
+  type SketchForgeMcpShapeSummary,
+  type SketchForgeMcpViewFace,
+} from "@/lib/sketchforgeMcpProtocol";
+import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierKind, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse } from "@/lib/cadModifierTypes";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, SketchImage, SketchPoint, SketchProfile, SketchSegment, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 export { importedShapeFromStl };
@@ -94,6 +104,21 @@ type EdgeModifierSession = {
   prepared: boolean;
   error: string | null;
   preview: WorkplaneShape | null;
+  componentPreviews: EdgeModifierComponentPreview[];
+};
+
+type EdgeModifierComponentPreview = {
+  owner: number;
+  shape: WorkplaneShape;
+};
+type EdgeFeatureRevertOption = {
+  id: string;
+  entryId: string;
+  path: number[];
+  label: string;
+  targetName: string;
+  createdAt: number;
+  removesNewerCount: number;
 };
 type ManifoldSolid = ReturnType<ManifoldToplevel["Manifold"]["cube"]>;
 type DownloadResult = { mode: "browser" } | { mode: "folder"; path: string };
@@ -139,6 +164,8 @@ declare global {
   interface Window {
     __sketchforgeBooleanTest?: BooleanAutomationResult;
     __sketchforgeBooleanTestImage?: string;
+    sketchforgeCaptureCanvas?: () => string;
+    sketchforgeCaptureView?: (face?: SketchForgeMcpViewFace) => Promise<string> | string;
   }
 }
 
@@ -150,6 +177,8 @@ const MODEL_DIMENSION_PRECISION = 3;
 const IMPORTED_EXACT_BOOLEAN_TRIANGLE_LIMIT = 150000;
 const COPLANAR_BOOLEAN_RESCUE_DEGREES = 0.02;
 const NORMAL_SELECTION_CAD_EDGE_MIN_ANGLE = 60;
+const MIN_EDGE_MODIFIER_AMOUNT = 0.001;
+const SEPARATE_PARTS_VERTEX_TOLERANCE = 0.0005;
 const svgLoader = new SVGLoader();
 const booleanFontLoader = new FontLoader();
 const booleanTextFonts: Record<string, Font> = {
@@ -1067,35 +1096,6 @@ function meshDataToCadTransfer(mesh: MeshData) {
   return { positions, indices };
 }
 
-function cadBrepTransformForShape(shape: WorkplaneShape) {
-  const frame = shape.cadBrepFrame;
-  if (!frame) return undefined;
-  const oldCenter = new THREE.Vector3(frame.x, frame.elevation + frame.height / 2, frame.z);
-  const currentCenter = new THREE.Vector3(shape.x, (shape.elevation ?? 0) + shape.height / 2, shape.z);
-  const rotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-    THREE.MathUtils.degToRad(shape.rotationX ?? 0),
-    THREE.MathUtils.degToRad(shape.rotation ?? 0),
-    THREE.MathUtils.degToRad(shape.rotationZ ?? 0),
-    "XYZ",
-  ));
-  const scale = new THREE.Vector3(
-    shapeWidth(shape) / Math.max(0.001, frame.width) * mirrorSign(shape.mirrorX),
-    shape.height / Math.max(0.001, frame.height) * mirrorSign(shape.mirrorY),
-    shapeDepth(shape) / Math.max(0.001, frame.depth) * mirrorSign(shape.mirrorZ),
-  );
-  const matrix = new THREE.Matrix4()
-    .compose(currentCenter, rotation, scale)
-    .multiply(new THREE.Matrix4().makeTranslation(-oldCenter.x, -oldCenter.y, -oldCenter.z));
-  const elements = matrix.elements;
-  const result = [
-    elements[0], elements[4], elements[8], elements[12],
-    elements[1], elements[5], elements[9], elements[13],
-    elements[2], elements[6], elements[10], elements[14],
-  ];
-  const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
-  return result.every((value, index) => Math.abs(value - identity[index]) < 1e-9) ? undefined : result;
-}
-
 function shapeFromCadMesh(
   source: WorkplaneShape,
   positions: Float32Array,
@@ -1170,6 +1170,7 @@ function shapeFromCadMesh(
       depth,
       height,
     },
+    cadPrimitiveFrame: undefined,
   });
 }
 
@@ -1217,6 +1218,10 @@ function tangentCadEdgeChain(edges: CadModifierEdge[], startId: number, allowedI
   return [...selected];
 }
 
+function selectableCadModifierEdge(edge: CadModifierEdge, sharpAngle: number) {
+  return edge.selectable && edge.manifold && !edge.boundary && edge.angle + 1e-3 >= sharpAngle;
+}
+
 function cadDisplayEdgesAfterTreatment(shape: WorkplaneShape, session: EdgeModifierSession) {
   const removed = new Set(session.selectedEdgeIds);
   const elevation = shape.elevation ?? 0;
@@ -1250,6 +1255,26 @@ function cadDisplayEdgesForShape(shape: WorkplaneShape, edges: CadModifierDispla
     }));
 }
 
+function cadModifierComponentPreviews(sourceParts: WorkplaneShape[], components: CadModifierComponentMesh[] | undefined): EdgeModifierComponentPreview[] {
+  if (!components?.length) return [];
+  const previews: EdgeModifierComponentPreview[] = [];
+  components.forEach((component) => {
+    const source = sourceParts[component.owner] ?? sourceParts[0];
+    if (!source) return;
+    const shape = shapeFromCadMesh(source, component.positions, component.normals, component.indices, component.brep);
+    if (!shape) return;
+    previews.push({
+      owner: component.owner,
+      shape: canonicalizeShape({
+        ...shape,
+        cadDisplayEdges: cadDisplayEdgesForShape(shape, component.displayEdges),
+        cadDisplayEdgesVersion: 2 as const,
+      }),
+    });
+  });
+  return previews;
+}
+
 function cloneWorkplaneShapeSnapshot(shape: WorkplaneShape): WorkplaneShape {
   return JSON.parse(JSON.stringify(canonicalizeShape(shape))) as WorkplaneShape;
 }
@@ -1257,6 +1282,139 @@ function cloneWorkplaneShapeSnapshot(shape: WorkplaneShape): WorkplaneShape {
 function edgeTreatmentLabel(feature: NonNullable<WorkplaneShape["edgeTreatments"]>[number]) {
   const size = `${Number(feature.amount.toFixed(2))} mm`;
   return `${feature.kind === "fillet" ? "fillet" : "chamfer"} (${size}, ${feature.edgeCount} edge${feature.edgeCount === 1 ? "" : "s"})`;
+}
+
+function shapeWithEdgeTreatmentRecord(
+  shape: WorkplaneShape,
+  before: WorkplaneShape,
+  feature: NonNullable<WorkplaneShape["edgeTreatments"]>[number],
+  preserveEdgeSize: boolean,
+  createdAt: number,
+) {
+  return canonicalizeShape({
+    ...shape,
+    edgeResizeMode: preserveEdgeSize ? "preserve" : "scale",
+    edgeTreatments: [
+      ...(before.edgeTreatments ?? []),
+      {
+        ...feature,
+      },
+    ],
+    edgeTreatmentHistory: [
+      ...(before.edgeTreatmentHistory ?? []),
+      {
+        id: createLocalId("edge-history"),
+        createdAt,
+        feature,
+        before: cloneWorkplaneShapeSnapshot(before),
+      },
+    ],
+  });
+}
+
+function shapeCenterDistance(a: WorkplaneShape, b: WorkplaneShape) {
+  const ax = a.x;
+  const ay = (a.elevation ?? 0) + a.height / 2;
+  const az = a.z;
+  const bx = b.x;
+  const by = (b.elevation ?? 0) + b.height / 2;
+  const bz = b.z;
+  return Math.hypot(ax - bx, ay - by, az - bz);
+}
+
+function shapeDimensionDistance(a: WorkplaneShape, b: WorkplaneShape) {
+  return Math.hypot(shapeWidth(a) - shapeWidth(b), a.height - b.height, shapeDepth(a) - shapeDepth(b));
+}
+
+function matchCadComponentsToSources(sourceParts: WorkplaneShape[], componentPreviews: EdgeModifierComponentPreview[]) {
+  const candidates = componentPreviews.flatMap((component, componentIndex) =>
+    sourceParts.map((source, sourceIndex) => ({
+      component,
+      componentIndex,
+      sourceIndex,
+      score: shapeCenterDistance(component.shape, source) + shapeDimensionDistance(component.shape, source) * 0.25,
+    })),
+  );
+  candidates.sort((a, b) => a.score - b.score);
+
+  const usedComponents = new Set<number>();
+  const usedSources = new Set<number>();
+  const ownerToSourceIndex = new Map<number, number>();
+  candidates.forEach((candidate) => {
+    if (usedComponents.has(candidate.componentIndex) || usedSources.has(candidate.sourceIndex)) return;
+    usedComponents.add(candidate.componentIndex);
+    usedSources.add(candidate.sourceIndex);
+    ownerToSourceIndex.set(candidate.component.owner, candidate.sourceIndex);
+  });
+  return ownerToSourceIndex;
+}
+
+function groupedShapeWithComponentEdgeTreatment(
+  base: WorkplaneShape,
+  preview: WorkplaneShape,
+  sourceParts: WorkplaneShape[],
+  session: EdgeModifierSession,
+  feature: NonNullable<WorkplaneShape["edgeTreatments"]>[number],
+  createdAt: number,
+) {
+  if (!base.groupedShapes?.length || sourceParts.length < 2 || session.componentPreviews.length === 0) {
+    return null;
+  }
+
+  const edgeById = new Map(session.edges.map((edge) => [edge.id, edge]));
+  const ownerEdgeCounts = new Map<number, number>();
+  session.selectedEdgeIds.forEach((edgeId) => {
+    const owner = edgeById.get(edgeId)?.owner;
+    if (typeof owner !== "number") return;
+    ownerEdgeCounts.set(owner, (ownerEdgeCounts.get(owner) ?? 0) + 1);
+  });
+  if (ownerEdgeCounts.size === 0) {
+    return null;
+  }
+
+  const ownerToSourceIndex = matchCadComponentsToSources(sourceParts, session.componentPreviews);
+  const componentByOwner = new Map(session.componentPreviews.map((component) => [component.owner, component]));
+  const updatedSources = [...sourceParts];
+  let changed = false;
+
+  ownerEdgeCounts.forEach((edgeCount, owner) => {
+    const sourceIndex = ownerToSourceIndex.get(owner);
+    const component = componentByOwner.get(owner);
+    if (sourceIndex === undefined || !component) return;
+    const source = sourceParts[sourceIndex];
+    const ownerFeature = { ...feature, edgeCount };
+    const retargeted = canonicalizeShape({
+      ...component.shape,
+      id: source.id,
+      name: source.name,
+      color: source.color,
+      hole: source.hole || undefined,
+      locked: source.locked,
+      hidden: source.hidden,
+      groupedShapes: source.groupedShapes,
+      groupedBaseWidth: source.groupedBaseWidth,
+      groupedBaseDepth: source.groupedBaseDepth,
+      groupedBaseHeight: source.groupedBaseHeight,
+    });
+    updatedSources[sourceIndex] = shapeWithEdgeTreatmentRecord(retargeted, source, ownerFeature, session.preserveEdgeSize, createdAt);
+    changed = true;
+  });
+
+  if (!changed) {
+    return null;
+  }
+
+  const elevation = preview.elevation ?? 0;
+  return canonicalizeShape({
+    ...preview,
+    edgeResizeMode: session.preserveEdgeSize ? "preserve" : "scale",
+    edgeTreatments: base.edgeTreatments,
+    edgeTreatmentHistory: base.edgeTreatmentHistory,
+    groupedBaseWidth: shapeWidth(preview),
+    groupedBaseDepth: shapeDepth(preview),
+    groupedBaseHeight: preview.height,
+    groupedShapes: updatedSources.map((shape) => cloneAsGroupChild(shape, preview.x, preview.z, elevation)),
+  });
 }
 
 function edgeTreatmentFeatureCount(shape: WorkplaneShape): number {
@@ -1267,17 +1425,21 @@ function reversibleEdgeTreatmentCount(shape: WorkplaneShape): number {
   return (shape.edgeTreatmentHistory?.length ?? 0) + (shape.groupedShapes?.reduce((total, child) => total + reversibleEdgeTreatmentCount(child), 0) ?? 0);
 }
 
-function latestEdgeTreatmentTimestamp(shape: WorkplaneShape): number {
-  const own = shape.edgeTreatmentHistory?.reduce((latest, entry) => Math.max(latest, entry.createdAt), Number.NEGATIVE_INFINITY) ?? Number.NEGATIVE_INFINITY;
-  const child = shape.groupedShapes?.reduce((latest, entry) => Math.max(latest, latestEdgeTreatmentTimestamp(entry)), Number.NEGATIVE_INFINITY) ?? Number.NEGATIVE_INFINITY;
-  return Math.max(own, child);
-}
-
-function latestOwnEdgeTreatmentEntry(shape: WorkplaneShape) {
-  return (shape.edgeTreatmentHistory ?? []).reduce<NonNullable<WorkplaneShape["edgeTreatmentHistory"]>[number] | null>(
-    (latest, entry) => (!latest || entry.createdAt >= latest.createdAt ? entry : latest),
-    null,
+function edgeTreatmentHistoryOptions(shape: WorkplaneShape, path: number[] = [], targetName = shape.name): EdgeFeatureRevertOption[] {
+  const ownHistory = shape.edgeTreatmentHistory ?? [];
+  const ownOptions = ownHistory.map((entry, index) => ({
+    id: `${path.length ? path.join(".") : "root"}:${entry.id}`,
+    entryId: entry.id,
+    path,
+    label: edgeTreatmentLabel(entry.feature),
+    targetName,
+    createdAt: entry.createdAt,
+    removesNewerCount: Math.max(0, ownHistory.length - index - 1),
+  }));
+  const childOptions = (shape.groupedShapes ?? []).flatMap((child, index) =>
+    edgeTreatmentHistoryOptions(child, [...path, index], `${targetName} / ${child.name}`),
   );
+  return [...ownOptions, ...childOptions].sort((a, b) => b.createdAt - a.createdAt);
 }
 
 function restoreOwnLastEdgeTreatment(shape: WorkplaneShape, entry: NonNullable<WorkplaneShape["edgeTreatmentHistory"]>[number]) {
@@ -1306,38 +1468,28 @@ function restoreOwnLastEdgeTreatment(shape: WorkplaneShape, entry: NonNullable<W
   });
 }
 
-async function restoreLastEdgeTreatmentInShape(shape: WorkplaneShape): Promise<{ shape: WorkplaneShape; label: string } | null> {
-  const ownEntry = latestOwnEdgeTreatmentEntry(shape);
-  const childCandidates = (shape.groupedShapes ?? [])
-    .map((child, index) => ({ index, createdAt: latestEdgeTreatmentTimestamp(child) }))
-    .filter((entry) => Number.isFinite(entry.createdAt));
-  const latestChild = childCandidates.reduce<{ index: number; createdAt: number } | null>(
-    (latest, entry) => (!latest || entry.createdAt > latest.createdAt ? entry : latest),
-    null,
-  );
-
-  if (ownEntry && (!latestChild || ownEntry.createdAt >= latestChild.createdAt)) {
-    return {
-      shape: restoreOwnLastEdgeTreatment(shape, ownEntry),
-      label: edgeTreatmentLabel(ownEntry.feature),
-    };
+async function restoreEdgeTreatmentInShape(shape: WorkplaneShape, path: number[], entryId: string): Promise<{ shape: WorkplaneShape; label: string } | null> {
+  if (path.length === 0) {
+    const entry = (shape.edgeTreatmentHistory ?? []).find((candidate) => candidate.id === entryId);
+    return entry ? { shape: restoreOwnLastEdgeTreatment(shape, entry), label: edgeTreatmentLabel(entry.feature) } : null;
   }
 
-  if (!latestChild || !shape.groupedShapes?.length) {
+  if (!shape.groupedShapes?.length) {
     return null;
   }
 
+  const [childIndex, ...restPath] = path;
   const restoredChildren = restoreGroupedChildren(shape);
-  const child = restoredChildren[latestChild.index];
+  const child = restoredChildren[childIndex];
   if (!child) {
     return null;
   }
-  const restoredChild = await restoreLastEdgeTreatmentInShape(child);
+  const restoredChild = await restoreEdgeTreatmentInShape(child, restPath, entryId);
   if (!restoredChild) {
     return null;
   }
 
-  restoredChildren[latestChild.index] = restoredChild.shape;
+  restoredChildren[childIndex] = restoredChild.shape;
   const rebuilt = await buildGroupedShapeFromSelection(restoredChildren);
   if (!rebuilt.group) {
     return null;
@@ -1862,6 +2014,11 @@ function shapeHasTransformToBake(shape: WorkplaneShape) {
   );
 }
 
+function cadModifierPrimitiveForShape(shape: WorkplaneShape): CadModifierPrimitivePart | null {
+  return cadModifierPrimitiveForBakedShape(shape)
+    ?? (shapeHasTransformToBake(shape) ? cadModifierPrimitiveForAnalyticBox(shape) : null);
+}
+
 function bakeShapeTransformIntoMesh(shape: WorkplaneShape): WorkplaneShape {
   if (!shapeHasTransformToBake(shape)) {
     return shape;
@@ -1901,6 +2058,7 @@ function bakeShapeTransformIntoMesh(shape: WorkplaneShape): WorkplaneShape {
   const height = cleanModelDimension(rawHeight);
   const depth = cleanModelDimension(rawDepth);
   const positions: number[] = [];
+  const bakedCadMetadata = bakeCadMetadataForShapeTransform(shape, { centerX, minY, centerZ, width, depth, height, yawDegrees: meshYawDegrees(shape) });
 
   mesh.faces.forEach(([ai, bi, ci]) => {
     [mesh.vertices[ai], mesh.vertices[bi], mesh.vertices[ci]].forEach(([x, y, z]) => {
@@ -1932,6 +2090,7 @@ function bakeShapeTransformIntoMesh(shape: WorkplaneShape): WorkplaneShape {
       triangleCount: mesh.faces.length,
       sourceFormat: "json",
     },
+    ...bakedCadMetadata,
     imagePlate: undefined,
     groupedShapes: undefined,
     groupedBaseWidth: undefined,
@@ -2632,6 +2791,128 @@ function meshDataPositions(mesh: MeshData) {
     });
   });
   return positions;
+}
+
+function meshFaceComponents(mesh: MeshData, tolerance = SEPARATE_PARTS_VERTEX_TOLERANCE) {
+  if (mesh.faces.length === 0) return [];
+  const keysByFace = mesh.faces.map((face) => face.map((vertexIndex) => quantizedPointKey(mesh.vertices[vertexIndex], tolerance)));
+  const facesByVertex = new Map<string, number[]>();
+  keysByFace.forEach((keys, faceIndex) => {
+    keys.forEach((key) => {
+      const current = facesByVertex.get(key);
+      if (current) {
+        current.push(faceIndex);
+      } else {
+        facesByVertex.set(key, [faceIndex]);
+      }
+    });
+  });
+
+  const visited = new Uint8Array(mesh.faces.length);
+  const components: number[][] = [];
+  for (let faceIndex = 0; faceIndex < mesh.faces.length; faceIndex += 1) {
+    if (visited[faceIndex]) continue;
+    const component: number[] = [];
+    const queue = [faceIndex];
+    visited[faceIndex] = 1;
+    while (queue.length > 0) {
+      const current = queue.pop() as number;
+      component.push(current);
+      keysByFace[current].forEach((key) => {
+        const neighbors = facesByVertex.get(key);
+        if (!neighbors) return;
+        facesByVertex.delete(key);
+        neighbors.forEach((neighbor) => {
+          if (visited[neighbor]) return;
+          visited[neighbor] = 1;
+          queue.push(neighbor);
+        });
+      });
+    }
+    components.push(component);
+  }
+  return components;
+}
+
+function meshComponentShape(source: WorkplaneShape, mesh: MeshData, faceIndices: number[], partIndex: number, totalParts: number): WorkplaneShape | null {
+  const worldPositions: number[] = [];
+  faceIndices.forEach((faceIndex) => {
+    const face = mesh.faces[faceIndex];
+    if (!face) return;
+    face.forEach((vertexIndex) => {
+      const vertex = mesh.vertices[vertexIndex];
+      if (vertex) worldPositions.push(vertex[0], vertex[1], vertex[2]);
+    });
+  });
+
+  const bounds = boundsForPositions(worldPositions);
+  if (!bounds) return null;
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerZ = (bounds.minZ + bounds.maxZ) / 2;
+  const rawWidth = Math.max(MIN_SHAPE_DIMENSION, bounds.maxX - bounds.minX);
+  const rawHeight = Math.max(MIN_SHAPE_DIMENSION, bounds.maxY - bounds.minY);
+  const rawDepth = Math.max(MIN_SHAPE_DIMENSION, bounds.maxZ - bounds.minZ);
+  const width = cleanModelDimension(rawWidth);
+  const height = cleanModelDimension(rawHeight);
+  const depth = cleanModelDimension(rawDepth);
+  const positions = worldPositions.map((value, index) => {
+    if (index % 3 === 0) return value - centerX;
+    if (index % 3 === 1) return value - bounds.minY;
+    return value - centerZ;
+  });
+
+  return canonicalizeShape({
+    id: createLocalId(`${source.id}-part`),
+    name: totalParts > 1 ? `${source.name} Part ${partIndex + 1}` : source.name,
+    kind: "mesh",
+    color: source.color,
+    hole: source.hole || undefined,
+    x: cleanNearZero(centerX, 0.0005),
+    z: cleanNearZero(centerZ, 0.0005),
+    elevation: cleanNearZero(bounds.minY, 0.0005),
+    size: Math.max(width, depth),
+    width,
+    depth,
+    height,
+    rotation: 0,
+    rotationX: 0,
+    rotationZ: 0,
+    importedMesh: {
+      positions,
+      baseWidth: rawWidth,
+      baseDepth: rawDepth,
+      baseHeight: rawHeight,
+      triangleCount: Math.floor(positions.length / 9),
+      sourceFormat: "json",
+    },
+    locked: false,
+    hidden: source.hidden,
+  });
+}
+
+function separateMeshParts(shape: WorkplaneShape) {
+  const mesh = meshForShape(shape);
+  const components = meshFaceComponents(mesh).filter((component) => component.length > 0);
+  if (components.length <= 1) return [];
+  return components
+    .map((component, index) => meshComponentShape(shape, mesh, component, index, components.length))
+    .filter((part): part is WorkplaneShape => Boolean(part));
+}
+
+function separablePartCount(shape: WorkplaneShape) {
+  if (shape.locked || shape.hole) return 0;
+  if (shape.groupedShapes?.length && !shape.importedMesh) return shape.groupedShapes.length;
+  const mesh = meshForShape(shape);
+  return meshFaceComponents(mesh).length;
+}
+
+function separateShapeParts(shape: WorkplaneShape) {
+  if (shape.locked || shape.hole) return [];
+  if (shape.groupedShapes?.length && !shape.importedMesh) {
+    const restored = restoreGroupedChildren(shape);
+    return restored.length > 1 ? restored : [];
+  }
+  return separateMeshParts(shape);
 }
 
 function cutBoundaryEdgeCount(positions: number[], cutters: WorkplaneShape[]) {
@@ -4622,6 +4903,7 @@ function debugShapeSummary(shape: WorkplaneShape): Record<string, unknown> {
     cadDisplayEdgesVersion: shape.cadDisplayEdgesVersion ?? null,
     edgeResizeMode: shape.edgeResizeMode ?? "scale",
     cadBrepLength: shape.cadBrep?.length ?? 0,
+    cadPrimitiveKind: shape.cadPrimitiveFrame?.kind ?? null,
     groupedCount: shape.groupedShapes?.length ?? 0,
     children: shape.groupedShapes?.map(debugShapeSummary) ?? [],
   };
@@ -4639,12 +4921,121 @@ function compactShapeSummary(shape: WorkplaneShape, index: number) {
     `viewEdges${shape.cadDisplayEdges?.length ?? "auto"}v${shape.cadDisplayEdgesVersion ?? 0}`,
     `edgeResize${shape.edgeResizeMode ?? "scale"}`,
     `brep${shape.cadBrep?.length ?? 0}`,
+    `prim${shape.cadPrimitiveFrame ? `${shape.cadPrimitiveFrame.kind}:${shape.cadPrimitiveFrame.width}:${shape.cadPrimitiveFrame.depth}:${shape.cadPrimitiveFrame.height}` : ""}`,
     `p${Number(shape.x.toFixed(2))},${Number(shape.z.toFixed(2))},${Number((shape.elevation ?? 0).toFixed(2))}`,
     `d${Number(shapeWidth(shape).toFixed(2))}x${Number(shapeDepth(shape).toFixed(2))}x${Number(shape.height.toFixed(2))}`,
     `r${Number((shape.rotationX ?? 0).toFixed(1))},${Number(shape.rotation.toFixed(1))},${Number((shape.rotationZ ?? 0).toFixed(1))}`,
     `m${shape.mirrorX ? "x" : ""}${shape.mirrorY ? "y" : ""}${shape.mirrorZ ? "z" : ""}`,
     childSummary ? `c[${childSummary}]` : "c[]",
   ].join(",");
+}
+
+function mcpShapeSummary(shape: WorkplaneShape): SketchForgeMcpShapeSummary {
+  return {
+    id: shape.id,
+    name: shape.name,
+    kind: shape.kind,
+    color: shape.color,
+    hole: Boolean(shape.hole),
+    locked: Boolean(shape.locked),
+    hidden: Boolean(shape.hidden),
+    position: {
+      x: shape.x,
+      z: shape.z,
+      elevation: shape.elevation ?? 0,
+    },
+    dimensions: {
+      width: shapeWidth(shape),
+      depth: shapeDepth(shape),
+      height: shape.height,
+      size: shape.size,
+    },
+    rotation: {
+      x: shape.rotationX ?? 0,
+      y: shape.rotation,
+      z: shape.rotationZ ?? 0,
+    },
+    mirror: {
+      x: Boolean(shape.mirrorX),
+      y: Boolean(shape.mirrorY),
+      z: Boolean(shape.mirrorZ),
+    },
+    edgeTreatments: shape.edgeTreatments ?? [],
+    groupedCount: shape.groupedShapes?.length ?? 0,
+    importedTriangles: shape.importedMesh?.triangleCount ?? 0,
+    cadDisplayEdgeCount: shape.cadDisplayEdges?.length ?? null,
+    sketchPointCount: shape.sketchProfile?.points.length ?? 0,
+    sketchSegmentCount: shape.sketchProfile?.segments.length ?? 0,
+    children: shape.groupedShapes?.map(mcpShapeSummary),
+  };
+}
+
+function defaultMcpSketchProfile(width: number, depth: number): SketchProfile {
+  const halfWidth = Math.max(0.01, width) / 2;
+  const halfDepth = Math.max(0.01, depth) / 2;
+  const pointIds = ["mcp-sketch-a", "mcp-sketch-b", "mcp-sketch-c", "mcp-sketch-d"].map((prefix) => createLocalId(prefix));
+  return {
+    points: [
+      { id: pointIds[0], x: -halfWidth, z: -halfDepth, mode: "corner" },
+      { id: pointIds[1], x: halfWidth, z: -halfDepth, mode: "corner" },
+      { id: pointIds[2], x: halfWidth, z: halfDepth, mode: "corner" },
+      { id: pointIds[3], x: -halfWidth, z: halfDepth, mode: "corner" },
+    ],
+    segments: [
+      { id: createLocalId("mcp-sketch-segment"), startId: pointIds[0], endId: pointIds[1], kind: "line" },
+      { id: createLocalId("mcp-sketch-segment"), startId: pointIds[1], endId: pointIds[2], kind: "line" },
+      { id: createLocalId("mcp-sketch-segment"), startId: pointIds[2], endId: pointIds[3], kind: "line" },
+      { id: createLocalId("mcp-sketch-segment"), startId: pointIds[3], endId: pointIds[0], kind: "line" },
+    ],
+    images: [],
+  };
+}
+
+function mcpNumber(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function mcpString(value: unknown, fallback: string) {
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function mcpStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+  }
+  return typeof value === "string" && value.length > 0 ? [value] : [];
+}
+
+function mcpNumberArray(value: unknown): number[] {
+  return Array.isArray(value) ? value.filter((entry): entry is number => typeof entry === "number" && Number.isInteger(entry)) : [];
+}
+
+function mcpFiniteNumberArray(value: unknown): number[] {
+  return Array.isArray(value) ? value.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry)) : [];
+}
+
+function readMcpEditorIdentity() {
+  const storageKey = "sketchforge.mcp.editorIdentity";
+  try {
+    const existing = JSON.parse(window.sessionStorage.getItem(storageKey) ?? "null") as { editorId?: unknown; editorNumber?: unknown } | null;
+    if (typeof existing?.editorId === "string" && typeof existing.editorNumber === "number") {
+      return { editorId: existing.editorId, editorNumber: existing.editorNumber };
+    }
+  } catch {
+    // Session identity is best-effort; fall through and create a new one.
+  }
+
+  const randomValues = new Uint32Array(1);
+  window.crypto?.getRandomValues?.(randomValues);
+  const editorNumber = 10000 + ((randomValues[0] || Math.floor(Math.random() * 90000)) % 90000);
+  const editorId = window.crypto?.randomUUID?.() ?? `sketchforge-editor-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const identity = { editorId, editorNumber };
+  try {
+    window.sessionStorage.setItem(storageKey, JSON.stringify(identity));
+  } catch {
+    // Private browsing can block sessionStorage; the in-memory identity is enough for this tab.
+  }
+  return identity;
 }
 
 function projectShapesFingerprint(shapes: WorkplaneShape[]) {
@@ -4657,6 +5048,30 @@ function projectShapesFingerprint(shapes: WorkplaneShape[]) {
         `clr${shape.color}`,
         `txt${shape.text ?? ""}`,
         `mesh${shape.importedMesh?.positions.length ?? 0}:${shape.importedMesh?.normals?.length ?? 0}`,
+        `cadFrame${shape.cadBrepFrame ? JSON.stringify({
+          x: Number(shape.cadBrepFrame.x.toFixed(6)),
+          z: Number(shape.cadBrepFrame.z.toFixed(6)),
+          elevation: Number(shape.cadBrepFrame.elevation.toFixed(6)),
+          width: Number(shape.cadBrepFrame.width.toFixed(6)),
+          depth: Number(shape.cadBrepFrame.depth.toFixed(6)),
+          height: Number(shape.cadBrepFrame.height.toFixed(6)),
+          sourceTransform: shape.cadBrepFrame.sourceTransform?.map((value) => Number(value.toFixed(9))) ?? null,
+        }) : ""}`,
+        `primitiveFrame${shape.cadPrimitiveFrame ? JSON.stringify({
+          kind: shape.cadPrimitiveFrame.kind,
+          width: Number(shape.cadPrimitiveFrame.width.toFixed(6)),
+          depth: Number(shape.cadPrimitiveFrame.depth.toFixed(6)),
+          height: Number(shape.cadPrimitiveFrame.height.toFixed(6)),
+          frame: {
+            x: Number(shape.cadPrimitiveFrame.frame.x.toFixed(6)),
+            z: Number(shape.cadPrimitiveFrame.frame.z.toFixed(6)),
+            elevation: Number(shape.cadPrimitiveFrame.frame.elevation.toFixed(6)),
+            width: Number(shape.cadPrimitiveFrame.frame.width.toFixed(6)),
+            depth: Number(shape.cadPrimitiveFrame.frame.depth.toFixed(6)),
+            height: Number(shape.cadPrimitiveFrame.frame.height.toFixed(6)),
+            sourceTransform: shape.cadPrimitiveFrame.frame.sourceTransform?.map((value) => Number(value.toFixed(9))) ?? null,
+          },
+        }) : ""}`,
         `sketch${shape.sketchProfile ? JSON.stringify({
           points: shape.sketchProfile.points,
           segments: shape.sketchProfile.segments,
@@ -4707,6 +5122,7 @@ export function SketchForgeEditor({
   const [history, setHistory] = useState<WorkplaneShape[][]>([[]]);
   const [historyIndex, setHistoryIndex] = useState(0);
   const [placementElevation, setPlacementElevation] = useState(0);
+  const [workspaceSettings, setWorkspaceSettings] = useState<WorkplaneWorkspaceSettings>(() => normalizeWorkspaceSettings(initialWorkspace));
   const [workplaneMode, setWorkplaneMode] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [topPanel, setTopPanel] = useState<TopPanel>(null);
@@ -4730,6 +5146,10 @@ export function SketchForgeEditor({
   const lastProjectIdRef = useRef<string | null>(null);
   const projectSnapshotRunRef = useRef(0);
   const shapesRef = useRef(shapes);
+  const selectedIdsRef = useRef(selectedIds);
+  const workspaceSettingsRef = useRef(workspaceSettings);
+  const noticeRef = useRef(notice);
+  const projectInfoRef = useRef({ projectId: projectId ?? null, projectName });
   const historyIndexRef = useRef(historyIndex);
   const interactionHistoryStartRef = useRef("");
   const interactionHistoryChangedRef = useRef(false);
@@ -4747,18 +5167,38 @@ export function SketchForgeEditor({
   const [sketchMeasurement, setSketchMeasurement] = useState<SketchMeasurement>(null);
   const [editingSketchShapeId, setEditingSketchShapeId] = useState<string | null>(null);
   const [edgeModifier, setEdgeModifier] = useState<EdgeModifierSession | null>(null);
+  const edgeModifierRef = useRef<EdgeModifierSession | null>(null);
   const cadModifierWorkerRef = useRef<Worker | null>(null);
+  const cadModifierPendingRef = useRef(new Map<number, {
+    resolve: (message: CadModifierWorkerResponse) => void;
+    reject: (error: Error) => void;
+    timer: number;
+  }>());
   const cadModifierRequestRef = useRef(0);
   const cadModifierPrepareRef = useRef(0);
   const cadModifierLatestPreviewRef = useRef(0);
   const cadModifierBaseShapeRef = useRef<WorkplaneShape | null>(null);
   const cadModifierBaseFingerprintRef = useRef("");
+  const cadModifierSourcePartsRef = useRef<WorkplaneShape[]>([]);
+  const lastMcpErrorRef = useRef<string | null>(null);
+  const executeMcpCommandRef = useRef<((command: SketchForgeMcpCommand) => Promise<unknown>) | null>(null);
 
   useEffect(() => {
     const worker = new Worker(new URL("../workers/cadModifier.worker.ts", import.meta.url), { type: "module" });
     cadModifierWorkerRef.current = worker;
     worker.onmessage = (event: MessageEvent<CadModifierWorkerResponse>) => {
       const message = event.data;
+      const pending = cadModifierPendingRef.current.get(message.requestId);
+      if (pending) {
+        window.clearTimeout(pending.timer);
+        cadModifierPendingRef.current.delete(message.requestId);
+        if (message.type === "error") {
+          pending.reject(new Error(message.message));
+        } else {
+          pending.resolve(message);
+        }
+        return;
+      }
       if (message.type === "ready") {
         if (message.requestId !== cadModifierPrepareRef.current) return;
         setEdgeModifier((current) => current ? {
@@ -4775,15 +5215,18 @@ export function SketchForgeEditor({
       if (message.type === "preview") {
         if (message.requestId !== cadModifierLatestPreviewRef.current) return;
         const base = cadModifierBaseShapeRef.current;
+        const sourceParts = cadModifierSourcePartsRef.current.length ? cadModifierSourcePartsRef.current : (base ? [base] : []);
         const rawPreview = base ? shapeFromCadMesh(base, message.positions, message.normals, message.indices, message.brep) : null;
         const preview = rawPreview ? {
           ...rawPreview,
           cadDisplayEdges: cadDisplayEdgesForShape(rawPreview, message.displayEdges),
           cadDisplayEdgesVersion: 2 as const,
         } : null;
+        const componentPreviews = cadModifierComponentPreviews(sourceParts, message.components);
         setEdgeModifier((current) => current ? {
           ...current,
           preview,
+          componentPreviews,
           busy: false,
           error: preview ? null : "The CAD kernel returned an empty edge treatment",
         } : current);
@@ -4792,6 +5235,18 @@ export function SketchForgeEditor({
       }
       if (message.type === "error") {
         if (message.requestId < cadModifierLatestPreviewRef.current) return;
+        if (message.resetSession) {
+          const requestId = cadModifierRequestRef.current + 1;
+          cadModifierRequestRef.current = requestId;
+          cadModifierLatestPreviewRef.current = requestId;
+          cadModifierPrepareRef.current = requestId;
+          cadModifierBaseShapeRef.current = null;
+          cadModifierBaseFingerprintRef.current = "";
+          cadModifierSourcePartsRef.current = [];
+          setEdgeModifier(null);
+          setNotice(message.message);
+          return;
+        }
         setEdgeModifier((current) => current ? { ...current, busy: false, preview: null, error: message.message } : current);
         setNotice("Edge treatment needs adjustment");
       }
@@ -4800,6 +5255,11 @@ export function SketchForgeEditor({
       setEdgeModifier((current) => current ? { ...current, busy: false, preview: null, error: "The CAD worker could not start" } : current);
     };
     return () => {
+      cadModifierPendingRef.current.forEach((pending) => {
+        window.clearTimeout(pending.timer);
+        pending.reject(new Error("The CAD worker was closed"));
+      });
+      cadModifierPendingRef.current.clear();
       worker.terminate();
       cadModifierWorkerRef.current = null;
     };
@@ -4815,6 +5275,7 @@ export function SketchForgeEditor({
     cadModifierWorkerRef.current?.postMessage({ type: "dispose", requestId } satisfies CadModifierWorkerRequest);
     cadModifierBaseShapeRef.current = null;
     cadModifierBaseFingerprintRef.current = "";
+    cadModifierSourcePartsRef.current = [];
     setEdgeModifier(null);
     return true;
   }, []);
@@ -4870,28 +5331,57 @@ export function SketchForgeEditor({
   }, [shapes]);
 
   useEffect(() => {
+    selectedIdsRef.current = selectedIds;
+  }, [selectedIds]);
+
+  useEffect(() => {
+    workspaceSettingsRef.current = workspaceSettings;
+  }, [workspaceSettings]);
+
+  useEffect(() => {
+    noticeRef.current = notice;
+  }, [notice]);
+
+  useEffect(() => {
+    projectInfoRef.current = { projectId: projectId ?? null, projectName };
+  }, [projectId, projectName]);
+
+  useEffect(() => {
     historyIndexRef.current = historyIndex;
   }, [historyIndex]);
+
+  useEffect(() => {
+    edgeModifierRef.current = edgeModifier;
+  }, [edgeModifier]);
+
+  useEffect(() => {
+    setWorkspaceSettings(normalizeWorkspaceSettings(initialWorkspace));
+  }, [initialWorkspace]);
 
   const selectedShapes = useMemo(() => shapes.filter((shape) => selectedIds.includes(shape.id)), [selectedIds, shapes]);
   const selectedShape = selectedShapes.at(-1) ?? null;
   const hasSelection = selectedShapes.length > 0;
   const modifierAvailableEdgeIds = useMemo(
-    () => edgeModifier ? edgeModifier.edges.filter((edge) => edge.manifold && !edge.boundary && edge.angle + 1e-3 >= edgeModifier.sharpAngle).map((edge) => edge.id) : [],
+    () => edgeModifier ? edgeModifier.edges.filter((edge) => selectableCadModifierEdge(edge, edgeModifier.sharpAngle)).map((edge) => edge.id) : [],
     [edgeModifier?.edges, edgeModifier?.sharpAngle],
   );
   const edgeModifierMaxAmount = useMemo(() => {
     const source = cadModifierBaseShapeRef.current ?? selectedShape;
     if (!source) return 10;
     const smallestDimension = Math.min(shapeWidth(source), shapeDepth(source), source.height);
-    return Math.max(0.05, smallestDimension * (edgeModifier?.kind === "chamfer" ? 0.99 : 0.5));
+    return Math.max(MIN_EDGE_MODIFIER_AMOUNT, smallestDimension * 0.99);
   }, [edgeModifier, selectedShape]);
   const selectedEdgeFeatureCount = useMemo(() => selectedShape ? edgeTreatmentFeatureCount(selectedShape) : 0, [selectedShape]);
   const selectedReversibleEdgeFeatureCount = useMemo(() => selectedShape ? reversibleEdgeTreatmentCount(selectedShape) : 0, [selectedShape]);
+  const selectedEdgeHistoryOptions = useMemo(() => selectedShape ? edgeTreatmentHistoryOptions(selectedShape) : [], [selectedShape]);
+  const canSeparateSelectedParts = useMemo(
+    () => selectedShapes.length === 1 && Boolean(selectedShape && separablePartCount(selectedShape) > 1),
+    [selectedShape, selectedShapes.length],
+  );
   const toggleModifierEdge = useCallback((id: number, singleEdge = false) => {
     setEdgeModifier((current) => {
       if (!current) return current;
-      const allowed = new Set(current.edges.filter((edge) => edge.boundary || edge.angle + 1e-3 >= current.sharpAngle).map((edge) => edge.id));
+      const allowed = new Set(current.edges.filter((edge) => selectableCadModifierEdge(edge, current.sharpAngle)).map((edge) => edge.id));
       if (!allowed.has(id)) return current;
       const ids = current.tangentChain && !singleEdge ? tangentCadEdgeChain(current.edges, id, allowed) : [id];
       const next = new Set(current.selectedEdgeIds);
@@ -5081,6 +5571,7 @@ export function SketchForgeEditor({
 
   const updateProjectWorkspaceSettings = useCallback(
     (settings: { workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => {
+      setWorkspaceSettings(settings.workspace);
       if (!projectId || !onProjectWorkspaceChange) {
         return;
       }
@@ -5111,7 +5602,7 @@ export function SketchForgeEditor({
     [historyIndex, selectedIds, syncProjectShapes],
   );
 
-  const removeLastEdgeTreatment = useCallback(async () => {
+  const removeEdgeTreatment = useCallback(async (optionId: string) => {
     if (!selectedShape) {
       setNotice("Select a shape with an edge feature first");
       return;
@@ -5120,7 +5611,12 @@ export function SketchForgeEditor({
       setNotice("Unlock the shape before removing an edge feature");
       return;
     }
-    const restored = await restoreLastEdgeTreatmentInShape(selectedShape);
+    const option = selectedEdgeHistoryOptions.find((candidate) => candidate.id === optionId);
+    if (!option) {
+      setNotice("Choose an edge feature to remove");
+      return;
+    }
+    const restored = await restoreEdgeTreatmentInShape(selectedShape, option.path, option.entryId);
     if (!restored) {
       setNotice(selectedEdgeFeatureCount > 0 ? "This edge feature has no stored undo history" : "No edge feature to remove");
       return;
@@ -5132,7 +5628,7 @@ export function SketchForgeEditor({
       `Removed ${restored.label}`,
     );
     setNotice(`Removed ${restored.label}`);
-  }, [commitShapes, invalidateCadModifierSession, selectedEdgeFeatureCount, selectedShape, shapes]);
+  }, [commitShapes, invalidateCadModifierSession, selectedEdgeFeatureCount, selectedEdgeHistoryOptions, selectedShape, shapes]);
 
   const commitSketchProfile = useCallback(
     (next: SketchProfile, message?: string) => {
@@ -5841,6 +6337,23 @@ export function SketchForgeEditor({
     return requestId;
   }, []);
 
+  const postCadModifierRequestAsync = useCallback((request: CadModifierWorkerPayload, transfer: Transferable[] = [], timeoutMs = 20000) => {
+    const worker = cadModifierWorkerRef.current;
+    if (!worker) {
+      return Promise.reject(new Error("The CAD worker is not ready"));
+    }
+    const requestId = cadModifierRequestRef.current + 1;
+    cadModifierRequestRef.current = requestId;
+    return new Promise<CadModifierWorkerResponse>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        cadModifierPendingRef.current.delete(requestId);
+        reject(new Error("Timed out waiting for the CAD worker"));
+      }, timeoutMs);
+      cadModifierPendingRef.current.set(requestId, { resolve, reject, timer });
+      worker.postMessage({ ...request, requestId } as CadModifierWorkerRequest, transfer);
+    });
+  }, []);
+
   const cancelEdgeModifier = useCallback(() => {
     invalidateCadModifierSession();
     setNotice("Edge modifier cancelled");
@@ -5851,21 +6364,24 @@ export function SketchForgeEditor({
       setNotice(`Select one unlocked solid to ${kind}`);
       return;
     }
+    const appliedEdgeTreatmentCount = edgeTreatmentFeatureCount(selectedShape);
     const hasAppliedEdgeTreatment = Boolean(selectedShape.importedMesh && selectedShape.edgeTreatments?.length);
     const sourceParts = selectedShape.groupedShapes?.length && !hasAppliedEdgeTreatment ? restoreGroupedChildren(selectedShape) : [selectedShape];
-    const partInputs: Array<{ shape: WorkplaneShape; mesh?: MeshData; brep?: string; brepTransform?: number[] }> = sourceParts.map((shape) => {
+    const partInputs: Array<{ shape: WorkplaneShape; mesh?: MeshData; brep?: string; brepTransform?: number[]; primitive?: CadModifierPrimitivePart }> = sourceParts.map((shape) => {
       const frame = shape.cadBrepFrame;
       const preserveNeedsRetessellation = preservesEdgeTreatmentSize(shape) && Boolean(frame) && (
         Math.abs(shapeWidth(shape) - (frame?.width ?? shapeWidth(shape))) > 1e-6 ||
         Math.abs(shapeDepth(shape) - (frame?.depth ?? shapeDepth(shape))) > 1e-6 ||
         Math.abs(shape.height - (frame?.height ?? shape.height)) > 1e-6
       );
+      const primitive = cadModifierPrimitiveForShape(shape);
+      if (primitive) return { shape, primitive };
       return shape.cadBrep && frame && !preserveNeedsRetessellation
         ? { shape, brep: shape.cadBrep, brepTransform: cadBrepTransformForShape(shape) }
         : { shape, mesh: meshForShape(shape) };
     });
     const triangleCount = partInputs.reduce((total, part) => total + (part.mesh?.faces.length ?? 0), 0);
-    if (triangleCount === 0 && partInputs.every((part) => !part.brep)) {
+    if (triangleCount === 0 && partInputs.every((part) => !part.brep && !part.primitive)) {
       setNotice("The selected object has no printable surface");
       return;
     }
@@ -5873,9 +6389,10 @@ export function SketchForgeEditor({
       setNotice("This mesh is too dense for interactive edge treatment. Simplify it below 180,000 triangles first.");
       return;
     }
-    const amount = Math.max(0.05, Math.min(1, shapeWidth(selectedShape) / 6, shapeDepth(selectedShape) / 6, selectedShape.height / 6));
+    const amount = Math.max(MIN_EDGE_MODIFIER_AMOUNT, Math.min(1, shapeWidth(selectedShape) / 6, shapeDepth(selectedShape) / 6, selectedShape.height / 6));
     cadModifierBaseShapeRef.current = selectedShape;
     cadModifierBaseFingerprintRef.current = projectShapesFingerprint([selectedShape]);
+    cadModifierSourcePartsRef.current = sourceParts;
     setAlignMode(false);
     setMirrorMode(false);
     setEdgeModifier({
@@ -5892,17 +6409,145 @@ export function SketchForgeEditor({
       prepared: false,
       error: null,
       preview: null,
+      componentPreviews: [],
     });
     setNotice(`Preparing ${kind} edges in the CAD worker`);
-    const parts: CadModifierMeshPart[] = partInputs.map((part) => part.brep
-      ? { brep: part.brep, brepTransform: part.brepTransform, hole: Boolean(part.shape.hole) }
-      : { ...meshDataToCadTransfer(part.mesh as MeshData), hole: Boolean(part.shape.hole) });
+    const parts: CadModifierMeshPart[] = partInputs.map((part) => {
+      if (part.brep) return { brep: part.brep, brepTransform: part.brepTransform, hole: Boolean(part.shape.hole) };
+      if (part.primitive) return { primitive: part.primitive, hole: Boolean(part.shape.hole) };
+      return { ...meshDataToCadTransfer(part.mesh as MeshData), hole: Boolean(part.shape.hole) };
+    });
     cadModifierPrepareRef.current = postCadModifierRequest({
       type: "prepare",
       parts,
       sharpAngle: 25,
+      suppressTreatmentDetailEdges: appliedEdgeTreatmentCount > 0,
     }, parts.flatMap((part) => part.positions && part.indices ? [part.positions.buffer, part.indices.buffer] : []));
   }, [postCadModifierRequest, selectedShape, selectedShapes.length]);
+
+  const prepareCadModifierForMcp = useCallback(async (shape: WorkplaneShape, sharpAngle: number) => {
+    if (shape.locked || shape.hole) {
+      throw new Error("Select one unlocked solid object for edge treatment");
+    }
+    const appliedEdgeTreatmentCount = edgeTreatmentFeatureCount(shape);
+    const hasAppliedEdgeTreatment = Boolean(shape.importedMesh && shape.edgeTreatments?.length);
+    const sourceParts = shape.groupedShapes?.length && !hasAppliedEdgeTreatment ? restoreGroupedChildren(shape) : [shape];
+    const partInputs: Array<{ shape: WorkplaneShape; mesh?: MeshData; brep?: string; brepTransform?: number[]; primitive?: CadModifierPrimitivePart }> = sourceParts.map((partShape) => {
+      const frame = partShape.cadBrepFrame;
+      const preserveNeedsRetessellation = preservesEdgeTreatmentSize(partShape) && Boolean(frame) && (
+        Math.abs(shapeWidth(partShape) - (frame?.width ?? shapeWidth(partShape))) > 1e-6 ||
+        Math.abs(shapeDepth(partShape) - (frame?.depth ?? shapeDepth(partShape))) > 1e-6 ||
+        Math.abs(partShape.height - (frame?.height ?? partShape.height)) > 1e-6
+      );
+      const primitive = cadModifierPrimitiveForShape(partShape);
+      if (primitive) return { shape: partShape, primitive };
+      return partShape.cadBrep && frame && !preserveNeedsRetessellation
+        ? { shape: partShape, brep: partShape.cadBrep, brepTransform: cadBrepTransformForShape(partShape) }
+        : { shape: partShape, mesh: meshForShape(partShape) };
+    });
+    const triangleCount = partInputs.reduce((total, part) => total + (part.mesh?.faces.length ?? 0), 0);
+    if (triangleCount === 0 && partInputs.every((part) => !part.brep && !part.primitive)) {
+      throw new Error("The selected object has no printable surface");
+    }
+    if (triangleCount > 180_000) {
+      throw new Error("This mesh is too dense for interactive edge treatment. Simplify it below 180,000 triangles first.");
+    }
+    const parts: CadModifierMeshPart[] = partInputs.map((part) => {
+      if (part.brep) return { brep: part.brep, brepTransform: part.brepTransform, hole: Boolean(part.shape.hole) };
+      if (part.primitive) return { primitive: part.primitive, hole: Boolean(part.shape.hole) };
+      return { ...meshDataToCadTransfer(part.mesh as MeshData), hole: Boolean(part.shape.hole) };
+    });
+    const transfer = parts.flatMap((part) => part.positions && part.indices ? [part.positions.buffer as Transferable, part.indices.buffer as Transferable] : []);
+    const response = await postCadModifierRequestAsync({
+      type: "prepare",
+      parts,
+      sharpAngle,
+      suppressTreatmentDetailEdges: appliedEdgeTreatmentCount > 0,
+    }, transfer);
+    if (response.type !== "ready") {
+      throw new Error("The CAD worker did not return an edge list");
+    }
+    return { response, sourceParts };
+  }, [postCadModifierRequestAsync]);
+
+  const applyCadModifierForMcp = useCallback(async (
+    shape: WorkplaneShape,
+    params: Record<string, unknown>,
+  ) => {
+    invalidateCadModifierSession();
+    const kind: CadModifierKind = params.kind === "fillet" ? "fillet" : "chamfer";
+    const sharpAngle = Math.max(1, Math.min(120, mcpNumber(params.sharpAngle, 25)));
+    const amount = Math.max(MIN_EDGE_MODIFIER_AMOUNT, mcpNumber(params.amount, 1));
+    const chamferAngle = Math.max(5, Math.min(85, mcpNumber(params.chamferAngle, 45)));
+    const quality: CadModifierQuality = params.quality === "draft" || params.quality === "fine" ? params.quality : "standard";
+    const preserveEdgeSize = typeof params.preserveEdgeSize === "boolean" ? params.preserveEdgeSize : shape.edgeResizeMode === "preserve";
+    const { response, sourceParts } = await prepareCadModifierForMcp(shape, sharpAngle);
+    const selectableIds = response.edges.filter((edge) => selectableCadModifierEdge(edge, sharpAngle)).map((edge) => edge.id);
+    const requestedIds = mcpNumberArray(params.edgeIds);
+    const selectedEdgeIds = params.edgeIds === "all" || params.allEdges === true ? selectableIds : requestedIds.filter((edgeId) => selectableIds.includes(edgeId));
+    const missingIds = requestedIds.filter((edgeId) => !selectableIds.includes(edgeId));
+    if (selectedEdgeIds.length === 0) {
+      throw new Error("Select at least one valid highlighted edge ID");
+    }
+    if (missingIds.length > 0) {
+      throw new Error(`These edge IDs are not selectable at the current threshold: ${missingIds.join(", ")}`);
+    }
+    const previewResponse = await postCadModifierRequestAsync({
+      type: "preview",
+      kind,
+      edgeIds: selectedEdgeIds,
+      amount,
+      quality,
+      chamferAngle,
+    }, [], 30000);
+    if (previewResponse.type !== "preview") {
+      throw new Error("The CAD worker did not return an edge preview");
+    }
+    const rawPreview = shapeFromCadMesh(shape, previewResponse.positions, previewResponse.normals, previewResponse.indices, previewResponse.brep);
+    if (!rawPreview) {
+      throw new Error("The CAD kernel returned an empty edge treatment");
+    }
+    const preview = canonicalizeShape({
+      ...rawPreview,
+      cadDisplayEdges: cadDisplayEdgesForShape(rawPreview, previewResponse.displayEdges),
+      cadDisplayEdgesVersion: 2 as const,
+    });
+    const feature = {
+      kind,
+      amount,
+      edgeCount: selectedEdgeIds.length,
+      ...(kind === "chamfer" ? { chamferAngle } : {}),
+    } satisfies NonNullable<WorkplaneShape["edgeTreatments"]>[number];
+    const session: EdgeModifierSession = {
+      kind,
+      edges: response.edges,
+      selectedEdgeIds,
+      amount,
+      sharpAngle,
+      chamferAngle,
+      quality,
+      tangentChain: false,
+      preserveEdgeSize,
+      busy: false,
+      prepared: true,
+      error: null,
+      preview,
+      componentPreviews: cadModifierComponentPreviews(sourceParts, previewResponse.components),
+    };
+    const createdAt = Date.now();
+    const groupedModifiedShape = groupedShapeWithComponentEdgeTreatment(shape, preview, sourceParts, session, feature, createdAt);
+    const modifiedShape = groupedModifiedShape ?? shapeWithEdgeTreatmentRecord(preview, shape, feature, preserveEdgeSize, createdAt);
+    commitShapes(
+      shapesRef.current.map((candidate) => candidate.id === shape.id ? modifiedShape : candidate),
+      modifiedShape.id,
+      `${kind === "fillet" ? "Filleted" : "Chamfered"} ${selectedEdgeIds.length} edge${selectedEdgeIds.length === 1 ? "" : "s"} by MCP`,
+    );
+    return {
+      object: mcpShapeSummary(modifiedShape),
+      selectedEdgeIds,
+      selectableEdgeIds: selectableIds,
+    };
+  }, [commitShapes, invalidateCadModifierSession, prepareCadModifierForMcp, postCadModifierRequestAsync]);
 
   useEffect(() => {
     const base = cadModifierBaseShapeRef.current;
@@ -5926,29 +6571,29 @@ export function SketchForgeEditor({
       edgeCount: edgeModifier.selectedEdgeIds.length,
       ...(edgeModifier.kind === "chamfer" ? { chamferAngle: edgeModifier.chamferAngle } : {}),
     } satisfies NonNullable<WorkplaneShape["edgeTreatments"]>[number];
-    const modifiedShape: WorkplaneShape = {
+    const createdAt = Date.now();
+    const previewShape = canonicalizeShape({
       ...edgeModifier.preview,
-      edgeResizeMode: edgeModifier.preserveEdgeSize ? "preserve" : "scale",
       cadDisplayEdges: edgeModifier.preview.cadDisplayEdges?.length
         ? edgeModifier.preview.cadDisplayEdges
         : cadDisplayEdgesAfterTreatment(edgeModifier.preview, edgeModifier),
       cadDisplayEdgesVersion: 2,
-      edgeTreatments: [
-        ...(base.edgeTreatments ?? []),
-        {
-          ...feature,
-        },
-      ],
-      edgeTreatmentHistory: [
-        ...(base.edgeTreatmentHistory ?? []),
-        {
-          id: createLocalId("edge-history"),
-          createdAt: Date.now(),
-          feature,
-          before: cloneWorkplaneShapeSnapshot(base),
-        },
-      ],
-    };
+    });
+    const groupedModifiedShape = groupedShapeWithComponentEdgeTreatment(
+      base,
+      previewShape,
+      cadModifierSourcePartsRef.current,
+      edgeModifier,
+      feature,
+      createdAt,
+    );
+    const modifiedShape: WorkplaneShape = groupedModifiedShape ?? shapeWithEdgeTreatmentRecord(
+      previewShape,
+      base,
+      feature,
+      edgeModifier.preserveEdgeSize,
+      createdAt,
+    );
     commitShapes(
       shapes.map((shape) => shape.id === base.id ? modifiedShape : shape),
       base.id,
@@ -6208,6 +6853,438 @@ export function SketchForgeEditor({
     const restored = groups.flatMap(restoreGroupedChildren);
     commitShapes([...shapes.filter((shape) => !groupIds.has(shape.id)), ...restored], restored.map((shape) => shape.id), `Ungrouped ${groups.length} group${groups.length === 1 ? "" : "s"}`);
   }, [commitShapes, selectedShapes, shapes]);
+
+  const separateSelectedParts = useCallback(() => {
+    if (selectedShapes.length !== 1 || !selectedShape) {
+      setNotice("Select one object to separate");
+      return;
+    }
+    if (selectedShape.locked) {
+      setNotice("Unlock the object before separating parts");
+      return;
+    }
+    const parts = separateShapeParts(selectedShape);
+    if (parts.length <= 1) {
+      setNotice("The selected object has only one connected part");
+      return;
+    }
+    commitShapes(
+      [...shapes.filter((shape) => shape.id !== selectedShape.id), ...parts],
+      parts.map((shape) => shape.id),
+      `Separated ${parts.length} parts`,
+    );
+  }, [commitShapes, selectedShape, selectedShapes.length, shapes]);
+
+  const mcpSceneSnapshot = useCallback((includeRawShapes = false): SketchForgeMcpSceneSummary & { rawShapes?: WorkplaneShape[] } => {
+    const projectInfo = projectInfoRef.current;
+    const currentShapes = shapesRef.current;
+    return {
+      projectId: projectInfo.projectId,
+      projectName: projectInfo.projectName,
+      notice: noticeRef.current,
+      selectedIds: selectedIdsRef.current,
+      shapeCount: currentShapes.length,
+      workspace: workspaceSettingsRef.current,
+      snap: initialSnap ?? null,
+      shapes: currentShapes.map(mcpShapeSummary),
+      ...(includeRawShapes ? { rawShapes: currentShapes.map((shape) => canonicalizeShape(shape)) } : {}),
+    };
+  }, [initialSnap]);
+
+  const executeMcpCommand = useCallback(async (command: SketchForgeMcpCommand): Promise<unknown> => {
+    const params = command.params ?? {};
+    const currentShapes = () => shapesRef.current;
+    const findShape = (id: unknown) => (typeof id === "string" ? currentShapes().find((shape) => shape.id === id) ?? null : null);
+
+    try {
+      lastMcpErrorRef.current = null;
+      if (command.action === "get_scene") {
+        return mcpSceneSnapshot(params.includeRawShapes === true);
+      }
+
+      if (command.action === "list_objects") {
+        return { objects: currentShapes().map(mcpShapeSummary) };
+      }
+
+      if (command.action === "select_objects") {
+        const requestedIds = mcpStringArray(params.ids ?? params.id);
+        const validIds = requestedIds.filter((id) => currentShapes().some((shape) => shape.id === id));
+        setSelectedIds(validIds);
+        selectedIdsRef.current = validIds;
+        setNotice(validIds.length ? `MCP selected ${validIds.length} object${validIds.length === 1 ? "" : "s"}` : "MCP cleared selection");
+        return { selectedIds: validIds, objects: currentShapes().filter((shape) => validIds.includes(shape.id)).map(mcpShapeSummary) };
+      }
+
+      if (command.action === "delete_objects") {
+        const requestedIds = mcpStringArray(params.ids ?? params.id);
+        const ids = requestedIds.length ? new Set(requestedIds) : new Set(selectedIdsRef.current);
+        const deleted = currentShapes().filter((shape) => ids.has(shape.id));
+        if (deleted.length === 0) throw new Error("No matching objects to delete");
+        commitShapes(currentShapes().filter((shape) => !ids.has(shape.id)), [], `MCP deleted ${deleted.length} object${deleted.length === 1 ? "" : "s"}`);
+        selectedIdsRef.current = [];
+        return { deletedIds: deleted.map((shape) => shape.id), deletedCount: deleted.length };
+      }
+
+      if (command.action === "create_shape") {
+        const rawKind = mcpString(params.kind, "box");
+        const kind = rawKind === "cube" ? "box" : rawKind;
+        const width = Math.max(MIN_SHAPE_DIMENSION, mcpNumber(params.width ?? params.size, 20));
+        const depth = Math.max(MIN_SHAPE_DIMENSION, mcpNumber(params.depth ?? params.size, rawKind === "cube" ? width : 20));
+        const height = Math.max(MIN_SHAPE_DIMENSION, mcpNumber(params.height ?? params.size, rawKind === "cube" ? width : 20));
+        const x = mcpNumber(params.x, 0);
+        const z = mcpNumber(params.z, 0);
+        const elevation = mcpNumber(params.elevation, placementElevation);
+        const color = mcpString(params.color, kind === "cylinder" ? "#d97813" : "#d41721");
+        const name = mcpString(params.name, kind === "cylinder" ? "Cylinder" : kind === "sketch" ? "Sketch extrusion" : rawKind === "cube" ? "Cube" : "Box");
+        let shape: WorkplaneShape;
+        if (kind === "sketch") {
+          const profile = defaultMcpSketchProfile(width, depth);
+          const extruded = shapeFromSketchProfile(profile, height);
+          if (!extruded) throw new Error("Could not create the sketch profile");
+          shape = canonicalizeShape({ ...extruded, name, color, x, z, elevation, rotation: mcpNumber(params.rotation, 0) });
+        } else if (kind === "box" || kind === "cylinder") {
+          shape = sceneShape({
+            name,
+            kind,
+            color,
+            x,
+            z,
+            elevation,
+            width,
+            depth,
+            height,
+            size: Math.max(width, depth),
+            rotation: mcpNumber(params.rotation, 0),
+            rotationX: mcpNumber(params.rotationX, 0),
+            rotationZ: mcpNumber(params.rotationZ, 0),
+            sides: kind === "cylinder" ? Math.max(3, Math.floor(mcpNumber(params.sides, 96))) : undefined,
+          });
+        } else {
+          throw new Error("MCP create_shape currently supports box, cube, cylinder, and sketch");
+        }
+        commitShapes([...currentShapes(), shape], shape.id, `${shape.name} added by MCP`);
+        return { object: mcpShapeSummary(shape) };
+      }
+
+      if (command.action === "import_mesh") {
+        const positions = mcpFiniteNumberArray(params.positions);
+        const normals = mcpFiniteNumberArray(params.normals);
+        if (positions.length < 9 || positions.length % 9 !== 0) {
+          throw new Error("import_mesh requires positions as triangle xyz values");
+        }
+        let minX = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let maxY = Number.NEGATIVE_INFINITY;
+        let minZ = Number.POSITIVE_INFINITY;
+        let maxZ = Number.NEGATIVE_INFINITY;
+        for (let index = 0; index < positions.length; index += 3) {
+          const x = positions[index];
+          const y = positions[index + 1];
+          const z = positions[index + 2];
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+          minZ = Math.min(minZ, z);
+          maxZ = Math.max(maxZ, z);
+        }
+        const width = Math.max(MIN_SHAPE_DIMENSION, mcpNumber(params.width, maxX - minX));
+        const depth = Math.max(MIN_SHAPE_DIMENSION, mcpNumber(params.depth, maxZ - minZ));
+        const height = Math.max(MIN_SHAPE_DIMENSION, mcpNumber(params.height, maxY - minY));
+        const shape = canonicalizeShape({
+          id: createLocalId("mcp-imported-mesh"),
+          name: mcpString(params.name, "Imported mesh"),
+          kind: "mesh",
+          color: mcpString(params.color, "#9bd7f0"),
+          x: mcpNumber(params.x, 0),
+          z: mcpNumber(params.z, 0),
+          elevation: mcpNumber(params.elevation, 0),
+          size: Math.max(width, depth),
+          width,
+          depth,
+          height,
+          rotation: mcpNumber(params.rotation, 0),
+          rotationX: mcpNumber(params.rotationX, 0),
+          rotationZ: mcpNumber(params.rotationZ, 0),
+          importedMesh: {
+            positions,
+            normals: normals.length === positions.length ? normals : undefined,
+            baseWidth: width,
+            baseDepth: depth,
+            baseHeight: height,
+            triangleCount: Math.floor(positions.length / 9),
+            sourceFormat: "json",
+          },
+          locked: false,
+          hidden: false,
+        } satisfies WorkplaneShape);
+        commitShapes([...currentShapes(), shape], shape.id, `${shape.name} imported by MCP`);
+        return { object: mcpShapeSummary(shape) };
+      }
+
+      if (command.action === "update_object") {
+        const target = findShape(params.id);
+        if (!target) throw new Error("Object not found");
+        if (target.locked) throw new Error("Unlock the object before updating it");
+        const patch: ShapeUpdatePatch = {};
+        (["x", "z", "elevation", "width", "depth", "height", "size", "rotation", "rotationX", "rotationZ"] as const).forEach((key) => {
+          if (typeof params[key] === "number" && Number.isFinite(params[key])) {
+            patch[key] = params[key];
+          }
+        });
+        if (typeof params.color === "string") patch.color = params.color;
+        if (typeof params.name === "string") patch.name = params.name;
+        if (typeof params.hole === "boolean") patch.hole = params.hole;
+        const nextShapes = currentShapes().map((shape) => {
+          if (shape.id !== target.id) return shape;
+          const patched = { ...shape, ...cleanShapePatch(patch) };
+          const width = shapeWidth(patched);
+          const depth = shapeDepth(patched);
+          return canonicalizeShape({ ...patched, size: Math.max(width, depth) });
+        });
+        const updated = nextShapes.find((shape) => shape.id === target.id) as WorkplaneShape;
+        commitShapes(nextShapes, target.id, `${updated.name} updated by MCP`);
+        return { object: mcpShapeSummary(updated) };
+      }
+
+      if (command.action === "align_objects") {
+        const axis = params.axis === "x" || params.axis === "y" || params.axis === "z" ? params.axis : null;
+        const target = params.target === "min" || params.target === "center" || params.target === "max" ? params.target : null;
+        if (!axis || !target) throw new Error("align_objects requires axis x/y/z and target min/center/max");
+        const requestedIds = mcpStringArray(params.ids);
+        const ids = requestedIds.length ? requestedIds : selectedIdsRef.current;
+        const selectedForAlign = currentShapes().filter((shape) => ids.includes(shape.id));
+        if (selectedForAlign.length < 2) throw new Error("Select at least two objects to align");
+        const validIds = selectedForAlign.map((shape) => shape.id);
+        const requestedAnchorId = typeof params.anchorId === "string" ? params.anchorId : null;
+        const anchorId = effectiveAlignmentAnchorId(selectedForAlign, requestedAnchorId);
+        const { nextShapes, moved } = alignedShapesForSelection(currentShapes(), validIds, selectedForAlign, anchorId, axis, target);
+        if (moved === 0) {
+          setSelectedIds(validIds);
+          selectedIdsRef.current = validIds;
+          setNotice(`MCP alignment already ${alignmentLabel(axis, target)}`);
+          return {
+            moved,
+            selectedIds: validIds,
+            anchorId,
+            objects: selectedForAlign.map(mcpShapeSummary),
+          };
+        }
+        commitShapes(nextShapes, validIds, `MCP aligned ${moved} object${moved === 1 ? "" : "s"} ${alignmentLabel(axis, target)}`);
+        return {
+          moved,
+          selectedIds: validIds,
+          anchorId,
+          objects: nextShapes.filter((shape) => validIds.includes(shape.id)).map(mcpShapeSummary),
+        };
+      }
+
+      if (command.action === "group_objects") {
+        const ids = new Set(mcpStringArray(params.ids));
+        const groupable = currentShapes().filter((shape) => ids.has(shape.id));
+        if (groupable.length < 2) throw new Error("Select at least two objects to group");
+        if (groupable.some((shape) => shape.locked)) throw new Error("Unlock every selected object before grouping");
+        const result = await buildGroupedShapeFromSelection(groupable);
+        if (!result.group) {
+          if (result.consumed) {
+            commitShapes(currentShapes().filter((shape) => !ids.has(shape.id)), null, "MCP group consumed solid");
+            return { consumed: true, objects: currentShapes().filter((shape) => !ids.has(shape.id)).map(mcpShapeSummary) };
+          }
+          throw new Error(result.failureNotice);
+        }
+        commitShapes([...currentShapes().filter((shape) => !ids.has(shape.id)), result.group], result.group.id, `MCP grouped ${groupable.length} objects`);
+        return { object: mcpShapeSummary(result.group) };
+      }
+
+      if (command.action === "ungroup_objects") {
+        const requestedIds = mcpStringArray(params.ids ?? params.id);
+        const ids = requestedIds.length ? new Set(requestedIds) : new Set(selectedIdsRef.current);
+        const groups = currentShapes().filter((shape) => ids.has(shape.id) && shape.groupedShapes?.length);
+        if (groups.length === 0) throw new Error("Select at least one group to ungroup");
+        const groupIds = new Set(groups.map((shape) => shape.id));
+        const restored = groups.flatMap(restoreGroupedChildren);
+        commitShapes([...currentShapes().filter((shape) => !groupIds.has(shape.id)), ...restored], restored.map((shape) => shape.id), `MCP ungrouped ${groups.length} group${groups.length === 1 ? "" : "s"}`);
+        return { objects: restored.map(mcpShapeSummary) };
+      }
+
+      if (command.action === "boolean_cut") {
+        const solidIds = new Set(mcpStringArray(params.solidIds ?? params.solids));
+        const holeIds = new Set(mcpStringArray(params.holeIds ?? params.holes));
+        const operandIds = new Set([...solidIds, ...holeIds]);
+        const operands = currentShapes()
+          .filter((shape) => operandIds.has(shape.id))
+          .map((shape) => holeIds.has(shape.id) ? withHoleMode(shape, true) : withHoleMode(shape, false));
+        if (!operands.some((shape) => !shape.hole) || !operands.some((shape) => shape.hole)) {
+          throw new Error("Provide at least one solidId and one holeId for boolean_cut");
+        }
+        if (operands.some((shape) => shape.locked)) {
+          throw new Error("Unlock every boolean operand before cutting");
+        }
+        const result = await buildGroupedShapeFromSelection(operands);
+        const remainingShapes = currentShapes().filter((shape) => !operandIds.has(shape.id));
+        if (result.consumed) {
+          commitShapes(remainingShapes, null, "MCP cut consumed solid");
+          return { consumed: true };
+        }
+        if (!result.group) {
+          throw new Error(result.failureNotice);
+        }
+        commitShapes([...remainingShapes, result.group], result.group.id, "MCP boolean cut complete");
+        return { object: mcpShapeSummary(result.group) };
+      }
+
+      if (command.action === "separate_parts") {
+        const target = findShape(params.id) ?? (selectedIdsRef.current.length === 1 ? findShape(selectedIdsRef.current[0]) : null);
+        if (!target) throw new Error("Select one object to separate");
+        if (target.locked) throw new Error("Unlock the object before separating parts");
+        const parts = separateShapeParts(target);
+        if (parts.length <= 1) throw new Error("The selected object has only one connected part");
+        commitShapes([...currentShapes().filter((shape) => shape.id !== target.id), ...parts], parts.map((shape) => shape.id), `MCP separated ${parts.length} parts`);
+        return { objects: parts.map(mcpShapeSummary) };
+      }
+
+      if (command.action === "list_edges") {
+        const target = findShape(params.id);
+        if (!target) throw new Error("Object not found");
+        invalidateCadModifierSession();
+        const sharpAngle = Math.max(1, Math.min(120, mcpNumber(params.sharpAngle, 25)));
+        const { response } = await prepareCadModifierForMcp(target, sharpAngle);
+        const selectableEdgeIds = response.edges.filter((edge) => selectableCadModifierEdge(edge, sharpAngle)).map((edge) => edge.id);
+        return { object: mcpShapeSummary(target), sharpAngle, selectableEdgeIds, edges: response.edges };
+      }
+
+      if (command.action === "apply_edge_treatment") {
+        const target = findShape(params.id);
+        if (!target) throw new Error("Object not found");
+        return applyCadModifierForMcp(target, params);
+      }
+
+      if (command.action === "inspect_errors") {
+        return {
+          notice: noticeRef.current,
+          edgeModifierError: edgeModifierRef.current?.error ?? null,
+          lastMcpError: lastMcpErrorRef.current,
+        };
+      }
+
+      if (command.action === "capture_image") {
+        const face = mcpString(params.face, "current") as SketchForgeMcpViewFace;
+        const image = await (window.sketchforgeCaptureView?.(face) ?? window.sketchforgeCaptureCanvas?.() ?? "");
+        if (!image || image.length < 100) {
+          throw new Error("The SketchForge viewport did not return an image");
+        }
+        return { face, dataUrl: image, bytesApprox: Math.floor(image.length * 0.75) };
+      }
+
+      throw new Error(`Unknown MCP command: ${command.action}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      lastMcpErrorRef.current = message;
+      setNotice(message);
+      throw error;
+    }
+  }, [
+    applyCadModifierForMcp,
+    commitShapes,
+    initialSnap,
+    invalidateCadModifierSession,
+    mcpSceneSnapshot,
+    placementElevation,
+    prepareCadModifierForMcp,
+  ]);
+
+  useEffect(() => {
+    executeMcpCommandRef.current = executeMcpCommand;
+  }, [executeMcpCommand]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production" || typeof window === "undefined") {
+      return;
+    }
+    if (!["localhost", "127.0.0.1", "::1"].includes(window.location.hostname)) {
+      return;
+    }
+
+    const identity = readMcpEditorIdentity();
+    let stopped = false;
+    let polling = false;
+
+    const heartbeat = () => {
+      const projectInfo = projectInfoRef.current;
+      const currentShapes = shapesRef.current;
+      void fetch(SKETCHFORGE_MCP_ROUTE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "heartbeat",
+          editor: {
+            ...identity,
+            projectId: projectInfo.projectId,
+            projectName: projectInfo.projectName,
+            url: window.location.href,
+            focused: document.visibilityState === "visible" && document.hasFocus(),
+            shapeCount: currentShapes.length,
+            selectedCount: selectedIdsRef.current.length,
+            notice: noticeRef.current,
+            lastError: edgeModifierRef.current?.error ?? lastMcpErrorRef.current,
+          },
+        }),
+      }).catch(() => undefined);
+    };
+
+    const submitResult = (commandId: string, ok: boolean, data?: unknown, error?: string) => {
+      void fetch(SKETCHFORGE_MCP_ROUTE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "result",
+          editorId: identity.editorId,
+          result: { commandId, ok, data, error, completedAt: Date.now() },
+        }),
+      }).catch(() => undefined);
+    };
+
+    const poll = async () => {
+      if (polling || stopped) return;
+      polling = true;
+      try {
+        const response = await fetch(SKETCHFORGE_MCP_ROUTE, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "poll", editorId: identity.editorId }),
+        });
+        const payload = (await response.json().catch(() => null)) as { command?: SketchForgeMcpCommand | null } | null;
+        const command = payload?.command;
+        if (command) {
+          try {
+            const data = await executeMcpCommandRef.current?.(command);
+            submitResult(command.id, true, data);
+          } catch (error) {
+            submitResult(command.id, false, undefined, error instanceof Error ? error.message : String(error));
+          }
+        }
+      } catch {
+        // The local bridge may not exist while static builds or tests render the editor.
+      } finally {
+        polling = false;
+      }
+    };
+
+    heartbeat();
+    void poll();
+    const heartbeatTimer = window.setInterval(heartbeat, 1000);
+    const pollTimer = window.setInterval(() => void poll(), SKETCHFORGE_MCP_POLL_MS);
+    window.addEventListener("focus", heartbeat);
+    document.addEventListener("visibilitychange", heartbeat);
+    return () => {
+      stopped = true;
+      window.clearInterval(heartbeatTimer);
+      window.clearInterval(pollTimer);
+      window.removeEventListener("focus", heartbeat);
+      document.removeEventListener("visibilitychange", heartbeat);
+    };
+  }, []);
 
   useEffect(() => {
     if (process.env.NODE_ENV === "production" || typeof window === "undefined") {
@@ -6820,6 +7897,7 @@ export function SketchForgeEditor({
             activePointId={sketchActivePointId}
             selected={sketchSelection}
             measurement={sketchMeasurement}
+            pendingMeasurementStart={sketchMeasureStart}
             initialSnap={initialSnap}
             initialWorkspace={initialWorkspace}
             onPlanePoint={addSketchPlanePoint}
@@ -6876,6 +7954,8 @@ export function SketchForgeEditor({
           onSetPlacementElevation={setPlacementWorkplane}
           onInteractionActiveChange={updateProjectInteractionActive}
           onEditSketch={beginSketchEdit}
+          canSeparateParts={canSeparateSelectedParts}
+          onSeparateParts={separateSelectedParts}
           onUpdateShape={updateShape}
           onWorkspaceSettingsChange={updateProjectWorkspaceSettings}
           onWorkplaneModeChange={setWorkplaneMode}
@@ -6895,24 +7975,26 @@ export function SketchForgeEditor({
           chamferAngle={edgeModifier.chamferAngle}
           quality={edgeModifier.quality}
           sharpAngle={edgeModifier.sharpAngle}
+          workspace={workspaceSettings}
           tangentChain={edgeModifier.tangentChain}
           preserveEdgeSize={edgeModifier.preserveEdgeSize}
           targetName={selectedShape?.name ?? "Object"}
           groupedCount={selectedShape?.groupedShapes?.length ?? 0}
           appliedFeatureCount={selectedEdgeFeatureCount}
           reversibleFeatureCount={selectedReversibleEdgeFeatureCount}
+          historyOptions={selectedEdgeHistoryOptions}
           selectedCount={edgeModifier.selectedEdgeIds.length}
           availableCount={modifierAvailableEdgeIds.length}
           busy={edgeModifier.busy}
           error={edgeModifier.error}
-          onAmountChange={(value) => setEdgeModifier((current) => current ? { ...current, amount: Math.max(0.05, Math.min(edgeModifierMaxAmount, value)), preview: null, busy: true, error: null } : current)}
+          onAmountChange={(value) => setEdgeModifier((current) => current ? { ...current, amount: Math.max(MIN_EDGE_MODIFIER_AMOUNT, Math.min(edgeModifierMaxAmount, value)), preview: null, busy: true, error: null } : current)}
           onChamferAngleChange={(value) => setEdgeModifier((current) => current ? { ...current, chamferAngle: Math.max(5, Math.min(85, value)), preview: null, busy: true, error: null } : current)}
           onQualityChange={(quality) => setEdgeModifier((current) => current ? { ...current, quality, preview: null, busy: true, error: null } : current)}
           onSharpAngleChange={(sharpAngle) => setEdgeModifier((current) => {
             if (!current) return current;
             const nextAngle = Math.max(1, Math.min(120, sharpAngle));
             const availableIds = new Set(current.edges
-              .filter((edge) => edge.manifold && !edge.boundary && edge.angle + 1e-3 >= nextAngle)
+              .filter((edge) => selectableCadModifierEdge(edge, nextAngle))
               .map((edge) => edge.id));
             const selectedEdgeIds = current.selectedEdgeIds.filter((edgeId) => availableIds.has(edgeId));
             return {
@@ -6928,7 +8010,7 @@ export function SketchForgeEditor({
           onPreserveEdgeSizeChange={(preserveEdgeSize) => setEdgeModifier((current) => current ? { ...current, preserveEdgeSize } : current)}
           onSelectAll={() => setEdgeModifier((current) => current ? { ...current, selectedEdgeIds: modifierAvailableEdgeIds, preview: null, busy: modifierAvailableEdgeIds.length > 0, error: modifierAvailableEdgeIds.length ? null : current.error } : current)}
           onClear={() => setEdgeModifier((current) => current ? { ...current, selectedEdgeIds: [], preview: null, busy: false, error: "Select at least one highlighted edge" } : current)}
-          onRemoveLastFeature={removeLastEdgeTreatment}
+          onRemoveFeature={removeEdgeTreatment}
           onApply={applyEdgeModifier}
           onCancel={cancelEdgeModifier}
         />
@@ -6980,6 +8062,34 @@ export function SketchForgeEditor({
         {compactDebugState}
       </pre>
     </div>
+  );
+}
+
+const sketchReferenceIcons = {
+  line: "sketch-tool-line.png",
+  bezier: "sketch-tool-bezier-curve.png",
+  smooth: "sketch-tool-smooth-curve.png",
+  select: "sketch-tool-select.png",
+  image: "sketch-tool-add-image.png",
+  refine: "sketch-tool-add-or-remove-points.png",
+  erase: "sketch-tool-erase.png",
+  measure: "sketch-tool-measure.png",
+  sketchTo3d: "sketch-tool-sketch-to-3d.png",
+  editSketchTo3d: "sketch-tool-edit-sketch-to-3d.png",
+} as const;
+
+type SketchReferenceIconName = keyof typeof sketchReferenceIcons;
+
+function SketchReferenceIcon({ name }: { name: SketchReferenceIconName }) {
+  return (
+    <img
+      aria-hidden="true"
+      className="sketch-reference-icon"
+      data-sketch-icon={name}
+      draggable={false}
+      src={`/assets/sketchforge/${sketchReferenceIcons[name]}`}
+      alt=""
+    />
   );
 }
 
@@ -7104,21 +8214,27 @@ function SecondaryToolbar({
     { label: "Undo", icon: ToolbarUndoIcon, action: onUndo, enabled: canUndo },
     { label: "Redo", icon: ToolbarRedoIcon, action: onRedo, enabled: canRedo },
   ];
-  const rightTools = [
+  const visibilityTools = [
     { label: "Hide selected", icon: ToolbarHideSelectedIcon, action: onToggleHidden, enabled: hasSelection },
     { label: "Visibility options", icon: ToolbarCaretDownIcon, action: onTips, enabled: hasSelection },
+  ];
+  const combineTools = [
     { label: "Group", icon: ToolbarGroupIcon, action: onGroup, enabled: canGroup },
     { label: "Ungroup", icon: ToolbarUngroupIcon, action: onUngroup, enabled: canUngroup },
     { label: "Boolean Intersection", icon: ToolbarIntersectionIcon, action: onIntersect, enabled: canIntersect },
+  ];
+  const modifyTools = [
     { label: "Align", icon: ToolbarAlignIcon, action: onAlign, enabled: canAlign, active: alignMode },
     { label: "Mirror", icon: ToolbarMirrorIcon, action: onMirror, enabled: hasSelection, active: mirrorMode },
     { label: "Snap to grid", icon: ToolbarSnapGridIcon, action: onSnap, enabled: hasSelection },
     { label: "Chamfer", icon: ToolbarChamferIcon, action: onChamfer, enabled: canEdgeModify, active: edgeModifierKind === "chamfer" },
     { label: "Fillet", icon: ToolbarFilletIcon, action: onFillet, enabled: canEdgeModify, active: edgeModifierKind === "fillet" },
+  ];
+  const arrangeTools = [
     { label: "Workplane", icon: ToolbarWorkplaneIcon, action: onWorkplaneTool, enabled: true, active: workplaneMode },
     { label: "Drop to workplane", icon: ToolbarDropToWorkplaneIcon, action: onDropToWorkplane, enabled: hasSelection },
   ];
-  const renderToolButton = (tool: (typeof leftTools)[number] | (typeof rightTools)[number]) => {
+  const renderToolButton = (tool: (typeof leftTools)[number] | (typeof visibilityTools)[number] | (typeof combineTools)[number] | (typeof modifyTools)[number] | (typeof arrangeTools)[number]) => {
     const { icon: Icon, action, enabled, label } = tool;
     const active = "active" in tool && Boolean(tool.active);
     return (
@@ -7242,19 +8358,19 @@ function SecondaryToolbar({
       <div className="tool-group right">
         <div className="toolbar-section compact">
           <div className="toolbar-section-label">Visibility</div>
-          <div className="toolbar-section-tools">{rightTools.slice(0, 2).map(renderToolButton)}</div>
+          <div className="toolbar-section-tools">{visibilityTools.map(renderToolButton)}</div>
         </div>
         <div className="toolbar-section">
           <div className="toolbar-section-label">Combine</div>
-          <div className="toolbar-section-tools">{rightTools.slice(2, 5).map(renderToolButton)}</div>
+          <div className="toolbar-section-tools">{combineTools.map(renderToolButton)}</div>
         </div>
         <div className="toolbar-section">
           <div className="toolbar-section-label">Modify</div>
-          <div className="toolbar-section-tools">{rightTools.slice(5, 10).map(renderToolButton)}</div>
+          <div className="toolbar-section-tools">{modifyTools.map(renderToolButton)}</div>
         </div>
         <div className="toolbar-section">
           <div className="toolbar-section-label">Arrange</div>
-          <div className="toolbar-section-tools">{rightTools.slice(10).map(renderToolButton)}</div>
+          <div className="toolbar-section-tools">{arrangeTools.map(renderToolButton)}</div>
         </div>
       </div>
       <div className="toolbar-section toolbar-actions-section">
@@ -7280,13 +8396,13 @@ function SecondaryToolbar({
                   <div className="toolbar-section-label">Draw</div>
                   <div className="toolbar-section-tools">
                     <button className={`toolbar-icon sketch-tool-icon ${sketchTool === "line" ? "active" : ""}`} type="button" aria-label="Line" title="Line" onClick={() => onSketchTool("line")}>
-                      <PencilLine />
+                      <SketchReferenceIcon name="line" />
                     </button>
-                    <button className={`toolbar-icon sketch-tool-icon ${sketchTool === "bezier" ? "active" : ""}`} type="button" aria-label="Bézier curve" title="Bézier curve" onClick={() => onSketchTool("bezier")}>
-                      <Spline />
+                    <button className={`toolbar-icon sketch-tool-icon ${sketchTool === "bezier" ? "active" : ""}`} type="button" aria-label="Bezier Curve" title="Bezier Curve" onClick={() => onSketchTool("bezier")}>
+                      <SketchReferenceIcon name="bezier" />
                     </button>
-                    <button className={`toolbar-icon sketch-tool-icon ${sketchTool === "smooth" ? "active" : ""}`} type="button" aria-label="Smooth curve" title="Smooth curve" onClick={() => onSketchTool("smooth")}>
-                      <Waves />
+                    <button className={`toolbar-icon sketch-tool-icon ${sketchTool === "smooth" ? "active" : ""}`} type="button" aria-label="Smooth Curve" title="Smooth Curve" onClick={() => onSketchTool("smooth")}>
+                      <SketchReferenceIcon name="smooth" />
                     </button>
                   </div>
                 </div>
@@ -7294,23 +8410,23 @@ function SecondaryToolbar({
                   <div className="toolbar-section-label">Select</div>
                   <div className="toolbar-section-tools">
                     <button className={`toolbar-icon sketch-tool-icon ${sketchTool === "select" ? "active" : ""}`} type="button" aria-label="Select" title="Select" onClick={() => onSketchTool("select")}>
-                      <MousePointer2 />
+                      <SketchReferenceIcon name="select" />
                     </button>
                     <button
                       className={`toolbar-icon sketch-tool-icon ${sketchTool === "select" ? "" : "disabled"}`}
                       type="button"
-                      aria-label="Add sketch image"
+                      aria-label="Add Image"
                       title={sketchTool === "select" ? "Add image" : "Choose Select to add an image"}
                       onClick={onSketchImage}
                       disabled={sketchTool !== "select"}
                     >
-                      <ImagePlus />
+                      <SketchReferenceIcon name="image" />
                     </button>
-                    <button className={`toolbar-icon sketch-tool-icon ${sketchTool === "refine" ? "active" : ""}`} type="button" aria-label="Add or remove points" title="Add or remove points" onClick={() => onSketchTool("refine")}>
-                      <ListPlus />
+                    <button className={`toolbar-icon sketch-tool-icon ${sketchTool === "refine" ? "active" : ""}`} type="button" aria-label="Add or Remove Points" title="Add or Remove Points" onClick={() => onSketchTool("refine")}>
+                      <SketchReferenceIcon name="refine" />
                     </button>
                     <button className={`toolbar-icon sketch-tool-icon ${sketchTool === "erase" ? "active" : ""}`} type="button" aria-label="Erase" title="Erase" onClick={() => onSketchTool("erase")}>
-                      <Eraser />
+                      <SketchReferenceIcon name="erase" />
                     </button>
                   </div>
                 </div>
@@ -7329,7 +8445,7 @@ function SecondaryToolbar({
                   <div className="toolbar-section-label">Inspect</div>
                   <div className="toolbar-section-tools">
                     <button className={`toolbar-icon sketch-tool-icon ${sketchTool === "measure" ? "active" : ""}`} type="button" aria-label="Measure" title="Measure" onClick={() => onSketchTool("measure")}>
-                      <Ruler />
+                      <SketchReferenceIcon name="measure" />
                     </button>
                   </div>
                 </div>
@@ -7353,11 +8469,11 @@ function SecondaryToolbar({
                 <div className="toolbar-section-label">Create</div>
                 <div className="toolbar-section-tools">
                   <button className="sketch-command-button primary" type="button" onClick={onStartSketch}>
-                    <PencilLine />
+                    <SketchReferenceIcon name="sketchTo3d" />
                     <span>Sketch to 3D</span>
                   </button>
-                  <button className={`sketch-command-button ${canEditSketch ? "" : "disabled"}`} type="button" onClick={onEditSketch} disabled={!canEditSketch}>
-                    <Box />
+                  <button className={`sketch-command-button ${canEditSketch ? "" : "disabled"}`} type="button" aria-label="Edit Sketch to 3D" title="Edit Sketch to 3D" onClick={onEditSketch} disabled={!canEditSketch}>
+                    <SketchReferenceIcon name="editSketchTo3d" />
                     <span>Edit</span>
                   </button>
                 </div>

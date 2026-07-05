@@ -148,24 +148,12 @@ export function ToolbarMirrorIcon() {
   return <ToolbarCommandImage file="toolbar-mirror.png" className="toolbar-user-art-icon" />;
 }
 
-export function ToolbarChamferIcon(props: IconProps) {
-  return (
-    <svg viewBox="0 0 48 48" aria-hidden="true" {...props}>
-      <path d="M12 17 18 11h18v18l-7 7H12Z" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round" />
-      <path d="m12 17 7 7h17M19 24v12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round" />
-      <path d="m12 17 6-6" fill="none" stroke="currentColor" strokeWidth="4.5" strokeLinecap="round" />
-    </svg>
-  );
+export function ToolbarChamferIcon() {
+  return <ToolbarCommandImage file="toolbar-chamfer.png" className="toolbar-user-art-icon" />;
 }
 
-export function ToolbarFilletIcon(props: IconProps) {
-  return (
-    <svg viewBox="0 0 48 48" aria-hidden="true" {...props}>
-      <path d="M12 17c0-3.3 2.7-6 6-6h18v18c0 3.9-3.1 7-7 7H12Z" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round" />
-      <path d="m12 17 7 7h17M19 24v12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round" />
-      <path d="M12 17c0-3.3 2.7-6 6-6" fill="none" stroke="currentColor" strokeWidth="4.5" strokeLinecap="round" />
-    </svg>
-  );
+export function ToolbarFilletIcon() {
+  return <ToolbarCommandImage file="toolbar-fillet.png" className="toolbar-user-art-icon" />;
 }
 
 export function ToolbarPreserveEdgeIcon(props: IconProps) {

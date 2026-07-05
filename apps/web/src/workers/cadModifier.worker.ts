@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import { OcctKernel, type ShapeHandle } from "occt-wasm";
-import type { CadModifierDisplayEdge, CadModifierEdge, CadModifierMeshPart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse } from "@/lib/cadModifierTypes";
+import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse } from "@/lib/cadModifierTypes";
 
 const HASH_UPPER_BOUND = 2_147_483_647;
 const CAD_EDGE_WIREFRAME_DEFLECTION = 0.035;
@@ -13,10 +13,12 @@ let baseSolids: ShapeHandle[] = [];
 let edgeHandles: ShapeHandle[] = [];
 let edgeOwners: number[] = [];
 
-type CollectedCadEdge = CadModifierEdge & {
+type CollectedCadEdgeGeometry = Omit<CadModifierEdge, "display" | "selectable"> & {
   curveType: string;
   surfaceTypes: string[];
+  faceAreas: number[];
 };
+type CollectedCadEdge = CollectedCadEdgeGeometry & Pick<CadModifierEdge, "display" | "selectable">;
 
 function post(message: CadModifierWorkerResponse, transfer: Transferable[] = []) {
   self.postMessage(message, { transfer });
@@ -43,6 +45,16 @@ function releaseSession(cad: OcctKernel) {
   baseSolids = [];
   edgeHandles = [];
   edgeOwners = [];
+}
+
+function cadShapeIsValid(cad: OcctKernel, shape: ShapeHandle) {
+  const validator = (cad as { isValid?: unknown }).isValid;
+  if (typeof validator !== "function") return true;
+  try {
+    return Boolean(validator.call(cad, shape));
+  } catch {
+    return false;
+  }
 }
 
 function orientedFaceNormal(cad: OcctKernel, face: ShapeHandle, point: { x: number; y: number; z: number }) {
@@ -128,19 +140,61 @@ function meshPartToAsciiStl(part: CadModifierMeshPart) {
   return lines.join("\n");
 }
 
+function isCadTransform(transform: number[] | undefined): transform is number[] {
+  return Boolean(transform?.length === 12 && transform.every(Number.isFinite));
+}
+
+function isIdentityCadTransform(transform: number[]) {
+  const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
+  return transform.every((value, index) => Math.abs(value - identity[index]) < 1e-9);
+}
+
+function applyCadTransform(cad: OcctKernel, shape: ShapeHandle, transform: number[] | undefined) {
+  if (!isCadTransform(transform) || isIdentityCadTransform(transform)) return shape;
+  try {
+    return cad.transform(shape, transform);
+  } catch {
+    return cad.generalTransform(shape, transform);
+  }
+}
+
+function reconstructPrimitiveSolid(cad: OcctKernel, primitive: CadModifierPrimitivePart) {
+  if (primitive.kind !== "box") {
+    throw new Error(`Unsupported CAD primitive: ${primitive.kind}`);
+  }
+  const width = primitive.width;
+  const depth = primitive.depth;
+  const height = primitive.height;
+  if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
+    throw new Error("The selected primitive has invalid dimensions");
+  }
+  const solid = cad.makeBoxFromCorners(
+    { x: -width / 2, y: 0, z: -depth / 2 },
+    { x: width / 2, y: height, z: depth / 2 },
+  );
+  const transformed = applyCadTransform(cad, solid, primitive.transform);
+  if (!cad.isSolid(transformed) || !cadShapeIsValid(cad, transformed)) {
+    throw new Error("The selected primitive could not be prepared as a valid CAD solid");
+  }
+  return transformed;
+}
+
 function reconstructSolid(cad: OcctKernel, part: CadModifierMeshPart) {
+  if (part.primitive) {
+    return reconstructPrimitiveSolid(cad, part.primitive);
+  }
   if (part.brep) {
     let exact = cad.fromBREP(part.brep);
     if (part.brepTransform?.length === 12) exact = cad.generalTransform(exact, part.brepTransform);
     const restoredSolids = cad.getSubShapes(exact, "solid");
-    if (cad.isValid(exact) && (cad.isSolid(exact) || restoredSolids.length > 0)) {
+    if (cadShapeIsValid(cad, exact) && (cad.isSolid(exact) || restoredSolids.length > 0)) {
       return restoredSolids.length === 1 ? restoredSolids[0] : exact;
     }
     exact = cad.fixShape(exact);
     exact = cad.fixFaceOrientations(exact);
     if (cad.isSolid(exact)) exact = cad.healSolid(exact, 1e-5);
     const healedSolids = cad.getSubShapes(exact, "solid");
-    if (cad.isValid(exact) && (cad.isSolid(exact) || healedSolids.length > 0)) {
+    if (cadShapeIsValid(cad, exact) && (cad.isSolid(exact) || healedSolids.length > 0)) {
       return healedSolids.length === 1 ? healedSolids[0] : exact;
     }
     throw new Error("The stored CAD feature could not be restored as a valid solid");
@@ -156,7 +210,7 @@ function reconstructSolid(cad: OcctKernel, part: CadModifierMeshPart) {
     } catch {
       // Fall through to face sewing when the imported solid cannot be healed directly.
     }
-    if (cad.isSolid(shape) && cad.isValid(shape)) return shape;
+    if (cad.isSolid(shape) && cadShapeIsValid(cad, shape)) return shape;
   }
 
   const faces = cad.getSubShapes(imported, "face");
@@ -169,7 +223,7 @@ function reconstructSolid(cad: OcctKernel, part: CadModifierMeshPart) {
       candidate = cad.fixFaceOrientations(candidate);
       candidate = cad.removeDegenerateEdges(candidate);
       candidate = cad.unifySameDomain(candidate);
-      if (cad.isSolid(candidate) && cad.isValid(candidate)) return candidate;
+      if (cad.isSolid(candidate) && cadShapeIsValid(cad, candidate)) return candidate;
     } catch {
       // Try the next tolerance. Curved tessellations can need looser vertex sewing.
     }
@@ -195,14 +249,52 @@ function reconstructParts(cad: OcctKernel, parts: CadModifierMeshPart[]) {
   result = cad.fixShape(result);
   result = cad.simplify(result);
   result = cad.unifySameDomain(result);
-  if (!cad.isValid(result)) throw new Error("The grouped solid could not be repaired into valid topology");
+  if (!cadShapeIsValid(cad, result)) throw new Error("The grouped solid could not be repaired into valid topology");
   return result;
 }
 
-function collectEdges(cad: OcctKernel, shape: ShapeHandle, sharpAngle: number) {
+function isDisplayCadEdge(edge: CollectedCadEdgeGeometry) {
+  if (!edge.manifold || edge.boundary || edge.points.length < 6) return false;
+  const effectiveAngle = Math.min(edge.angle, 180 - edge.angle);
+  const touchesCurvedSurface = edge.surfaceTypes.some((surfaceType) => CURVED_SURFACE_TYPES.has(surfaceType));
+  const isCurvedEdge = edge.curveType !== "line";
+  return effectiveAngle + 1e-3 >= CAD_DISPLAY_EDGE_MIN_ANGLE || touchesCurvedSurface || isCurvedEdge;
+}
+
+function treatmentDetailFaceAreaLimit(faceAreas: number[]) {
+  const finiteAreas = faceAreas.filter((area) => Number.isFinite(area) && area > 1e-8);
+  if (finiteAreas.length === 0) return 0;
+  return Math.max(1e-8, Math.max(...finiteAreas) * 0.3);
+}
+
+function touchesTreatmentDetailFace(edge: CollectedCadEdgeGeometry, areaLimit: number) {
+  return areaLimit > 0 && edge.faceAreas.some((area) => area > 0 && area <= areaLimit);
+}
+
+function isModifierDisplayCadEdge(edge: CollectedCadEdgeGeometry, treatmentAreaLimit: number) {
+  return isDisplayCadEdge(edge) && !touchesTreatmentDetailFace(edge, treatmentAreaLimit);
+}
+
+function isSelectableModifierEdge(edge: CollectedCadEdgeGeometry) {
+  return edge.manifold && !edge.boundary && edge.points.length >= 6;
+}
+
+function collectEdges(cad: OcctKernel, shape: ShapeHandle, sharpAngle: number, suppressTreatmentDetailEdges = false) {
   const handles = cad.getSubShapes(shape, "edge");
   const faces = cad.getSubShapes(shape, "face");
   const faceByHash = new Map(faces.map((face) => [cad.hashCode(face, HASH_UPPER_BOUND), face]));
+  const faceAreaByHash = new Map<number, number>();
+  faces.forEach((face) => {
+    const hash = cad.hashCode(face, HASH_UPPER_BOUND);
+    let area = 0;
+    try {
+      area = Math.abs(cad.getSurfaceArea(face));
+    } catch {
+      area = 0;
+    }
+    faceAreaByHash.set(hash, area);
+  });
+  const treatmentAreaLimit = suppressTreatmentDetailEdges ? treatmentDetailFaceAreaLimit([...faceAreaByHash.values()]) : 0;
   const adjacentFaces = parseEdgeFaceMap(cad.edgeToFaceMap(shape, HASH_UPPER_BOUND));
   const wire = cad.wireframe(shape, CAD_EDGE_WIREFRAME_DEFLECTION);
   const pointsByHash = new Map<number, number[]>();
@@ -213,11 +305,12 @@ function collectEdges(cad: OcctKernel, shape: ShapeHandle, sharpAngle: number) {
     if (!pointsByHash.has(hash)) pointsByHash.set(hash, Array.from(wire.points.slice(start, start + count)));
   }
 
-  const edges: CollectedCadEdge[] = handles.map((handle, id) => {
+  const collectedEdges = handles.map((handle, id) => {
     const hash = cad.hashCode(handle, HASH_UPPER_BOUND);
     const faceHashes = adjacentFaces.get(hash) ?? [];
     const points = pointsByHash.get(hash) ?? [];
     const classification = edgeAngle(cad, points, faceHashes, faceByHash);
+    const faceAreas = faceHashes.map((faceHash) => faceAreaByHash.get(faceHash) ?? 0);
     const surfaceTypes = faceHashes
       .map((faceHash) => faceByHash.get(faceHash))
       .filter((face): face is ShapeHandle => face !== undefined)
@@ -234,22 +327,21 @@ function collectEdges(cad: OcctKernel, shape: ShapeHandle, sharpAngle: number) {
     } catch {
       curveType = "unknown";
     }
-    return { id, points, ...classification, curveType, surfaceTypes };
+    return { id, points, ...classification, curveType, surfaceTypes, faceAreas };
   }).filter((edge) => edge.points.length >= 6);
-  const selectableEdgeIds = edges.filter((edge) => edge.manifold && !edge.boundary && edge.angle + 1e-3 >= sharpAngle).map((edge) => edge.id);
+  const edges: CollectedCadEdge[] = collectedEdges.map((edge) => ({
+    ...edge,
+    display: treatmentAreaLimit > 0 ? isModifierDisplayCadEdge(edge, treatmentAreaLimit) : isDisplayCadEdge(edge),
+    selectable: isSelectableModifierEdge(edge),
+  }));
+  const selectableEdgeIds = edges.filter((edge) => edge.selectable && edge.angle + 1e-3 >= sharpAngle).map((edge) => edge.id);
   const displayEdges = cadDisplayEdgesFromCollected(edges);
-  return { handles, edges: edges.map(({ curveType: _curveType, surfaceTypes: _surfaceTypes, ...edge }) => edge), selectableEdgeIds, displayEdges };
+  return { handles, edges: edges.map(({ curveType: _curveType, surfaceTypes: _surfaceTypes, faceAreas: _faceAreas, ...edge }) => edge), selectableEdgeIds, displayEdges };
 }
 
 function cadDisplayEdgesFromCollected(edges: CollectedCadEdge[]): CadModifierDisplayEdge[] {
   return edges
-    .filter((edge) => {
-      if (!edge.manifold || edge.boundary || edge.points.length < 6) return false;
-      const effectiveAngle = Math.min(edge.angle, 180 - edge.angle);
-      const touchesCurvedSurface = edge.surfaceTypes.some((surfaceType) => CURVED_SURFACE_TYPES.has(surfaceType));
-      const isCurvedEdge = edge.curveType !== "line";
-      return effectiveAngle + 1e-3 >= CAD_DISPLAY_EDGE_MIN_ANGLE || touchesCurvedSurface || isCurvedEdge;
-    })
+    .filter(isDisplayCadEdge)
     .map((edge) => ({ points: edge.points }));
 }
 
@@ -259,33 +351,56 @@ function tessellationOptions(quality: CadModifierQuality, amount: number) {
   return { linearDeflection: Math.max(0.055, amount / 7), angularDeflection: 0.2 };
 }
 
+function copyCadMesh(mesh: { positions: Float32Array; normals: Float32Array; indices: Uint32Array; triangleCount: number }) {
+  return {
+    positions: new Float32Array(mesh.positions),
+    normals: new Float32Array(mesh.normals),
+    indices: new Uint32Array(mesh.indices),
+    triangleCount: mesh.triangleCount,
+  };
+}
+
+function isWasmMemoryFault(message: string) {
+  return /memory access out of bounds|WebAssembly\.RuntimeError|wasm|abort/i.test(message);
+}
+
+function isImportStlWasmFault(message: string) {
+  return /importStl:.*WebAssembly\.Exception/i.test(message);
+}
+
+function isMissingValidatorFault(message: string) {
+  return /isValid/i.test(message) && /null|not a function|undefined/i.test(message);
+}
+
 self.onmessage = async (event: MessageEvent<CadModifierWorkerRequest>) => {
   const request = event.data;
+  let cad: OcctKernel | null = null;
   try {
-    const cad = await kernel();
+    cad = await kernel();
+    const activeCad = cad;
     if (request.type === "dispose") {
-      releaseSession(cad);
+      releaseSession(activeCad);
       post({ type: "disposed", requestId: request.requestId });
       return;
     }
     if (request.type === "prepare") {
-      releaseSession(cad);
-      baseShape = reconstructParts(cad, request.parts);
-      const collected = collectEdges(cad, baseShape, request.sharpAngle);
+      releaseSession(activeCad);
+      baseShape = reconstructParts(activeCad, request.parts);
+      const collected = collectEdges(activeCad, baseShape, request.sharpAngle, Boolean(request.suppressTreatmentDetailEdges));
       edgeHandles = collected.handles;
-      baseSolids = cad.isSolid(baseShape) ? [baseShape] : cad.getSubShapes(baseShape, "solid");
+      baseSolids = activeCad.isSolid(baseShape) ? [baseShape] : activeCad.getSubShapes(baseShape, "solid");
       if (baseSolids.length === 0) throw new Error("The selected group contains no closed solid components");
-      const ownerHashes = baseSolids.map((solid) => new Set(cad.getSubShapes(solid, "edge").map((edge) => cad.hashCode(edge, HASH_UPPER_BOUND))));
+      const ownerHashes = baseSolids.map((solid) => new Set(activeCad.getSubShapes(solid, "edge").map((edge) => activeCad.hashCode(edge, HASH_UPPER_BOUND))));
       edgeOwners = edgeHandles.map((edge) => {
-        const hash = cad.hashCode(edge, HASH_UPPER_BOUND);
+        const hash = activeCad.hashCode(edge, HASH_UPPER_BOUND);
         return Math.max(0, ownerHashes.findIndex((hashes) => hashes.has(hash)));
       });
       post({
         type: "ready",
         requestId: request.requestId,
-        edges: collected.edges,
+        edges: collected.edges.map((edge) => ({ ...edge, owner: edgeOwners[edge.id] ?? 0 })),
         selectableEdgeIds: collected.selectableEdgeIds,
-        sourceType: cad.getShapeType(baseShape),
+        sourceType: activeCad.getShapeType(baseShape),
       });
       return;
     }
@@ -294,26 +409,60 @@ self.onmessage = async (event: MessageEvent<CadModifierWorkerRequest>) => {
     if (selected.length === 0) throw new Error("Select at least one highlighted edge");
     const componentResults = baseSolids.map((solid, owner) => {
       const componentEdges = selected.filter((entry) => entry.owner === owner).map((entry) => entry.edge);
-      if (componentEdges.length === 0) return cad.copy(solid);
+      if (componentEdges.length === 0) return activeCad.copy(solid);
       return request.kind === "fillet"
-        ? cad.fillet(solid, componentEdges, request.amount)
+        ? activeCad.fillet(solid, componentEdges, request.amount)
         : Math.abs(request.chamferAngle - 45) < 0.001
-          ? cad.chamfer(solid, componentEdges, request.amount)
-          : cad.chamferDistAngle(solid, componentEdges, request.amount, request.chamferAngle);
+          ? activeCad.chamfer(solid, componentEdges, request.amount)
+          : activeCad.chamferDistAngle(solid, componentEdges, request.amount, request.chamferAngle);
     });
-    const result = componentResults.length === 1 ? componentResults[0] : cad.makeCompound(componentResults);
-    if (!cad.isValid(result)) throw new Error("The chosen size creates invalid or overlapping edge geometry");
-    const mesh = cad.tessellate(result, tessellationOptions(request.quality, request.amount));
-    const displayEdges = collectEdges(cad, result, request.chamferAngle).displayEdges;
-    const brep = cad.toBREP(result);
-    componentResults.forEach((component) => cad.release(component));
-    if (componentResults.length > 1) cad.release(result);
+    const result = componentResults.length === 1 ? componentResults[0] : activeCad.makeCompound(componentResults);
+    if (!cadShapeIsValid(activeCad, result)) throw new Error("The chosen size creates invalid or overlapping edge geometry");
+    const options = tessellationOptions(request.quality, request.amount);
+    const mesh = copyCadMesh(activeCad.tessellate(result, options));
+    const displayEdges = collectEdges(activeCad, result, request.chamferAngle).displayEdges;
+    const brep = activeCad.toBREP(result);
+    const components: CadModifierComponentMesh[] = componentResults.map((component, owner) => {
+      const componentMesh = copyCadMesh(activeCad.tessellate(component, options));
+      return {
+        owner,
+        positions: componentMesh.positions,
+        normals: componentMesh.normals,
+        indices: componentMesh.indices,
+        triangleCount: componentMesh.triangleCount,
+        brep: activeCad.toBREP(component),
+        displayEdges: collectEdges(activeCad, component, request.chamferAngle).displayEdges,
+      };
+    });
+    componentResults.forEach((component) => activeCad.release(component));
+    if (componentResults.length > 1) activeCad.release(result);
     post(
-      { type: "preview", requestId: request.requestId, positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, triangleCount: mesh.triangleCount, brep, displayEdges },
-      [mesh.positions.buffer, mesh.normals.buffer, mesh.indices.buffer],
+      { type: "preview", requestId: request.requestId, positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, triangleCount: mesh.triangleCount, brep, displayEdges, components },
+      [
+        mesh.positions.buffer,
+        mesh.normals.buffer,
+        mesh.indices.buffer,
+        ...components.flatMap((component) => [component.positions.buffer, component.normals.buffer, component.indices.buffer]),
+      ],
     );
   } catch (error) {
-    const rawMessage = error instanceof Error ? error.message : "";
+    const rawMessage = error instanceof Error ? error.message : String(error ?? "");
+    if (isWasmMemoryFault(rawMessage) || isImportStlWasmFault(rawMessage) || isMissingValidatorFault(rawMessage)) {
+      if (cad) releaseSession(cad);
+      kernelPromise = null;
+      const message = isImportStlWasmFault(rawMessage)
+        ? "The selected mesh could not be converted into a closed CAD solid. The CAD kernel reset; try Separate Parts, ungrouping, or simplifying the object before adding edge features."
+        : isMissingValidatorFault(rawMessage)
+          ? "The CAD kernel exposed an incomplete validation function and reset. Start the edge tool again; no page refresh is needed."
+        : "The CAD kernel hit a memory fault and reset. Start the edge tool again; no page refresh is needed.";
+      post({
+        type: "error",
+        requestId: request.requestId,
+        message,
+        resetSession: true,
+      });
+      return;
+    }
     const message = request.type === "preview" && (rawMessage.includes("WebAssembly.Exception") || rawMessage.includes("fillet:") || rawMessage.includes("chamfer:"))
       ? `The selected edges cannot be ${request.kind === "fillet" ? "filleted" : "chamfered"} together at this size. Reduce the size or select fewer connected edges.`
       : rawMessage || "The CAD kernel could not complete this edge treatment";

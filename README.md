@@ -18,11 +18,11 @@
     <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
     <a href="https://github.com/Formsmith746/SketchForge-3D/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Formsmith746/SketchForge-3D?style=social"></a>
     <img alt="Local first" src="https://img.shields.io/badge/local--first-no%20account-0ea5e9">
-    <img alt="Version 0.2.0" src="https://img.shields.io/badge/version-0.2.0-2563eb">
+    <img alt="Version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-2563eb">
   </p>
 </div>
 
-![SketchForge v0.2 editor showing a selected box on the workplane](docs/media/sketchforge-editor-v0.2.png)
+![SketchForge editor showing a selected box on the workplane](docs/media/sketchforge-editor-v0.5.png)
 
 ## Why SketchForge
 
@@ -39,8 +39,10 @@ No login. No server project storage. No heavyweight CAD install just to make a u
 - **Primitive shape library** - boxes, cylinders, spheres, cones, pyramids, wedges, text, roofs, half spheres, torus shapes, tubes, and more.
 - **Solid and hole workflow** - turn shapes into cutters and group them into final geometry.
 - **Boolean Intersection** - keep only the geometry where selected solid and hole shapes overlap.
+- **Reversible edge tools** - chamfer and fillet selected CAD edges, with history controls for removing applied edge features.
+- **Rotated solid edge treatment** - chamfer and fillet preserve analytic box topology after one-, two-, or three-axis rotations.
 - **STL import** - bring outside models into the same workspace as primitives.
-- **STL and OBJ export** - export selected objects or the whole scene.
+- **STL, OBJ, and STEP workflows** - export selected objects or the whole scene, and round-trip exact STEP/B-Rep geometry.
 - **Fast browser stack** - Next.js, React, TypeScript, Three.js, and Manifold/CSG geometry tooling.
 
 ## Demo
@@ -238,6 +240,12 @@ Run tests:
 npm run test
 ```
 
+Start the local SketchForge MCP bridge for editor automation:
+
+```bash
+npm run mcp:sketchforge
+```
+
 Create a production build:
 
 ```bash
@@ -309,6 +317,7 @@ apps/web/src/types/         Shared shape and editor types
 apps/web/src/generated/     Generated Manifold runtime source
 apps/web/src/lib/           Shared utilities
 apps/web/public/assets/     Static app images, icons, logos, shape assets
+scripts/                    Build and local automation helpers
 docs/media/                 README screenshots and demo videos
 deploy/docker/              Docker, Compose, and Nginx deployment files
 .github/                    Issue templates and community files
@@ -322,7 +331,9 @@ SketchForge is alpha, but the core editor loop is usable today:
 - add, move, resize, rotate, mirror, align, duplicate, hide, and delete shapes
 - switch shapes between solid and hole modes
 - group and ungroup geometry
+- apply and remove chamfer/fillet edge treatments
 - import STL files
+- import and export STEP files
 - export STL or OBJ
 - generate project thumbnails
 

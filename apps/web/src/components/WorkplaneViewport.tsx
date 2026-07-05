@@ -19,6 +19,7 @@ import { ShapeInspector, SnapGridControl, type ShapeInspectorUpdateOptions } fro
 import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettingsModal";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, workplaneSettingsFingerprint } from "@/lib/workplaneSettings";
 import { cleanNearZero, cleanRotationDegrees, fallbackSolidColor, mirroredAxisCount, mirrorSign, preservesEdgeTreatmentSize, proportionalResizeScale, resizedImportedCoordinates, resizedImportedMeshPositions, resizedShapeSize, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
+import type { SketchForgeMcpViewFace } from "@/lib/sketchforgeMcpProtocol";
 import {
   TransformOverlay,
   getElevationMeasureKey,
@@ -89,6 +90,7 @@ const preservedImportedGeometryCache = new WeakMap<WorkplaneShape, THREE.BufferG
 const imageTextureLoader = new THREE.TextureLoader();
 const IMPORTED_SELECTED_EDGE_TRIANGLE_LIMIT = 40000;
 const NORMAL_IMPORTED_SELECTION_EDGE_ANGLE = 60;
+const MODIFIER_EDGE_PICK_RADIUS_PX = 14;
 
 function parseDroppedShapeAsset(raw: string): ShapeAsset | null {
   try {
@@ -146,6 +148,8 @@ type WorkplaneViewportProps = {
   onSetPlacementElevation: (elevation: number, source: "shape" | "base") => void;
   onInteractionActiveChange?: (active: boolean) => void;
   onEditSketch?: () => void;
+  canSeparateParts?: boolean;
+  onSeparateParts?: () => void;
   onUpdateShape: (id: string, patch: ShapeUpdatePatch) => void;
   onWorkspaceSettingsChange?: (settings: { workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => void;
   onWorkplaneModeChange: (active: boolean) => void;
@@ -219,6 +223,7 @@ declare global {
       get: () => ViewportPerfStats;
     };
     sketchforgeCaptureCanvas?: () => string;
+    sketchforgeCaptureView?: (face?: SketchForgeMcpViewFace) => Promise<string> | string;
   }
 }
 
@@ -521,6 +526,51 @@ function projectToScreen(point: THREE.Vector3, state: ThreeState) {
     x: ((projected.x + 1) / 2) * rect.width,
     y: ((1 - projected.y) / 2) * rect.height,
   };
+}
+
+function distanceToScreenSegment(x: number, y: number, ax: number, ay: number, bx: number, by: number) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSq = dx * dx + dy * dy;
+  const amount = lengthSq > 0.0001 ? clamp(((x - ax) * dx + (y - ay) * dy) / lengthSq, 0, 1) : 0;
+  return Math.hypot(x - (ax + dx * amount), y - (ay + dy * amount));
+}
+
+function projectCadPointToCanvas(point: THREE.Vector3, state: ThreeState, rect: DOMRect) {
+  const projected = point.clone().project(state.camera);
+  if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y) || projected.z < -1 || projected.z > 1) {
+    return null;
+  }
+  return {
+    x: ((projected.x + 1) / 2) * rect.width,
+    y: ((1 - projected.y) / 2) * rect.height,
+  };
+}
+
+function pickModifierEdgeFromScreen(state: ThreeState, edges: CadModifierEdge[], clientX: number, clientY: number) {
+  const rect = state.renderer.domElement.getBoundingClientRect();
+  const pointerX = clientX - rect.left;
+  const pointerY = clientY - rect.top;
+  const pointA = new THREE.Vector3();
+  const pointB = new THREE.Vector3();
+  let nearestId: number | null = null;
+  let nearestDistance = MODIFIER_EDGE_PICK_RADIUS_PX;
+  state.camera.updateMatrixWorld();
+  edges.forEach((edge) => {
+    for (let index = 0; index + 5 < edge.points.length; index += 3) {
+      pointA.set(edge.points[index], edge.points[index + 1], edge.points[index + 2]);
+      pointB.set(edge.points[index + 3], edge.points[index + 4], edge.points[index + 5]);
+      const a = projectCadPointToCanvas(pointA, state, rect);
+      const b = projectCadPointToCanvas(pointB, state, rect);
+      if (!a || !b) continue;
+      const distance = distanceToScreenSegment(pointerX, pointerY, a.x, a.y, b.x, b.y);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestId = edge.id;
+      }
+    }
+  });
+  return nearestId;
 }
 
 function syncRulerOverlay(
@@ -1112,6 +1162,8 @@ export function WorkplaneViewport({
   onSetPlacementElevation,
   onInteractionActiveChange,
   onEditSketch,
+  canSeparateParts = false,
+  onSeparateParts,
   onUpdateShape,
   onWorkspaceSettingsChange,
   onWorkplaneModeChange,
@@ -1170,6 +1222,8 @@ export function WorkplaneViewport({
   const mirrorModeRef = useRef(mirrorMode);
   const modifierActiveRef = useRef(modifierActive);
   const modifierPreviewActiveRef = useRef(modifierPreviewActive);
+  const modifierEdgesRef = useRef(modifierEdges);
+  const [hoverModifierEdgeId, setHoverModifierEdgeId] = useState<number | null>(null);
   const selectedIdsKeyRef = useRef(selectedIds.join("|"));
   const perfRef = useRef({
     fps: 0,
@@ -1186,8 +1240,9 @@ export function WorkplaneViewport({
   );
 
   useEffect(() => {
-    rebuildModifierEdges(threeRef.current, modifierEdges, selectedModifierEdgeIds, modifierPreviewActive);
-  }, [modifierEdges, modifierPreviewActive, selectedModifierEdgeIds]);
+    modifierEdgesRef.current = modifierEdges;
+    rebuildModifierEdges(threeRef.current, modifierEdges, selectedModifierEdgeIds, modifierPreviewActive, hoverModifierEdgeId);
+  }, [hoverModifierEdgeId, modifierEdges, modifierPreviewActive, selectedModifierEdgeIds]);
 
   const placementElevationRef = useRef(placementElevation);
   const workplaneModeRef = useRef(workplaneMode);
@@ -1259,10 +1314,11 @@ export function WorkplaneViewport({
   useEffect(() => {
     shapesRef.current = shapes;
     rebuildShapes(threeRef.current, shapes, renderSelectionIds(), !transformRef.current && !dragRef.current);
+    refreshDragPreviewObjects(threeRef.current, dragRef.current);
     if (threeRef.current) {
       syncTransformOverlay(
         threeRef.current,
-        shapes,
+        previewShapesForDrag(shapes, dragRef.current),
         selectedIdsRef.current,
         transformOverlayRef,
         setTransformOverlay,
@@ -1306,10 +1362,11 @@ export function WorkplaneViewport({
     }
     selectedIdsRef.current = selectedIds;
     rebuildShapes(threeRef.current, shapesRef.current, renderSelectionIds(selectedIds), !transformRef.current && !dragRef.current);
+    refreshDragPreviewObjects(threeRef.current, dragRef.current);
     if (threeRef.current) {
       syncTransformOverlay(
         threeRef.current,
-        shapesRef.current,
+        previewShapesForDrag(shapesRef.current, dragRef.current),
         selectedIds,
         transformOverlayRef,
         setTransformOverlay,
@@ -1324,6 +1381,7 @@ export function WorkplaneViewport({
 
   useEffect(() => {
     modifierActiveRef.current = modifierActive;
+    if (!modifierActive) setHoverModifierEdgeId(null);
     rebuildShapes(threeRef.current, shapesRef.current, renderSelectionIds(), !transformRef.current && !dragRef.current);
     if (threeRef.current) threeRef.current.needsRender = true;
   }, [modifierActive, renderSelectionIds]);
@@ -1333,6 +1391,12 @@ export function WorkplaneViewport({
     rebuildShapes(threeRef.current, shapesRef.current, renderSelectionIds(), !transformRef.current && !dragRef.current);
     if (threeRef.current) threeRef.current.needsRender = true;
   }, [modifierPreviewActive, renderSelectionIds]);
+
+  useEffect(() => {
+    if (hoverModifierEdgeId !== null && !modifierEdges.some((edge) => edge.id === hoverModifierEdgeId)) {
+      setHoverModifierEdgeId(null);
+    }
+  }, [hoverModifierEdgeId, modifierEdges]);
 
   useEffect(() => {
     alignModeRef.current = alignMode;
@@ -1411,6 +1475,17 @@ export function WorkplaneViewport({
       state.renderer.render(state.scene, state.camera);
       return state.renderer.domElement.toDataURL("image/png");
     };
+    window.sketchforgeCaptureView = (face = "current") => {
+      if (face === "home") {
+        resetCamera(state);
+      } else if (face !== "current") {
+        setCameraToViewFace(state, face);
+      }
+      syncViewCube(state, viewCubeRef.current);
+      state.camera.updateMatrixWorld();
+      state.renderer.render(state.scene, state.camera);
+      return state.renderer.domElement.toDataURL("image/png");
+    };
     perfRef.current.lastSample = performance.now();
     resetCamera(state);
     rebuildShapes(state, shapesRef.current, renderSelectionIds());
@@ -1482,6 +1557,9 @@ export function WorkplaneViewport({
       host.replaceChildren();
       if (window.sketchforgeCaptureCanvas) {
         delete window.sketchforgeCaptureCanvas;
+      }
+      if (window.sketchforgeCaptureView) {
+        delete window.sketchforgeCaptureView;
       }
       threeRef.current = null;
     };
@@ -2199,14 +2277,16 @@ export function WorkplaneViewport({
   const pickModifierEdge = useCallback((clientX: number, clientY: number) => {
     const state = threeRef.current;
     if (!state) return null;
-    const rect = state.renderer.domElement.getBoundingClientRect();
-    state.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-    state.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-    state.raycaster.setFromCamera(state.pointer, state.camera);
-    const hit = state.raycaster
-      .intersectObjects(state.modifierLayer.children, true)
-      .find((entry) => typeof entry.object.userData.modifierEdgeId === "number");
-    return hit ? hit.object.userData.modifierEdgeId as number : null;
+    return pickModifierEdgeFromScreen(state, modifierEdgesRef.current, clientX, clientY);
+  }, []);
+
+  const updateModifierEdgeHover = useCallback((clientX: number, clientY: number) => {
+    const edgeId = pickModifierEdge(clientX, clientY);
+    setHoverModifierEdgeId((current) => (current === edgeId ? current : edgeId));
+  }, [pickModifierEdge]);
+
+  const clearModifierEdgeHover = useCallback(() => {
+    setHoverModifierEdgeId((current) => (current === null ? current : null));
   }, []);
 
   const pickTransformHandle = useCallback((clientX: number, clientY: number) => {
@@ -2497,6 +2577,10 @@ export function WorkplaneViewport({
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (modifierActiveRef.current) {
+        updateModifierEdgeHover(event.clientX, event.clientY);
+        return;
+      }
       if (rulerModeRef.current) {
         updateRulerHover(event.clientX, event.clientY);
         return;
@@ -2542,21 +2626,7 @@ export function WorkplaneViewport({
       drag.items.forEach((item) => {
         item.nextX = clamp(item.startX + deltaX, -workspaceRef.current.width / 2 + 6, workspaceRef.current.width / 2 - 6);
         item.nextZ = clamp(item.startZ + deltaZ, -workspaceRef.current.depth / 2 + 6, workspaceRef.current.depth / 2 - 6);
-
-        if (item.visual) {
-          if (!item.hadPreviewSimplified) {
-            setComplexEdgeVisibility(item.visual, false);
-            item.hadPreviewSimplified = true;
-          }
-          item.visual.position.x = item.nextX;
-          item.visual.position.z = item.nextZ;
-        }
-
-        if (item.helper && item.helperBox) {
-          item.helper.box.copy(item.helperBox);
-          item.helper.box.translate(new THREE.Vector3(item.nextX - item.startX, 0, item.nextZ - item.startZ));
-          item.helper.updateMatrixWorld(true);
-        }
+        if (threeRef.current) applyDragItemPreview(threeRef.current, item);
       });
       if (threeRef.current) {
         const previewShapes = previewShapesForDrag(shapesRef.current, drag);
@@ -2574,8 +2644,12 @@ export function WorkplaneViewport({
         threeRef.current.needsRender = true;
       }
     },
-    [setMarqueeFromState, toPlanePoint, updateRulerHover, updateTransform],
+    [setMarqueeFromState, toPlanePoint, updateModifierEdgeHover, updateRulerHover, updateTransform],
   );
+
+  const handlePointerLeave = useCallback(() => {
+    if (modifierActiveRef.current) clearModifierEdgeHover();
+  }, [clearModifierEdgeHover]);
 
   const finishDrag = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -2846,7 +2920,7 @@ export function WorkplaneViewport({
         </button>
       </div>
 
-      <section className={`workplane-wrap ${workplaneMode ? "placing-workplane" : ""} ${rulerMode ? "ruler-mode" : ""}`} aria-label="Workplane">
+      <section className={`workplane-wrap ${workplaneMode ? "placing-workplane" : ""} ${rulerMode ? "ruler-mode" : ""} ${modifierActive ? "modifier-edge-pick" : ""}`} aria-label="Workplane">
         <div className="workplane-plane">
           <div
             className="three-workplane-host"
@@ -2860,6 +2934,7 @@ export function WorkplaneViewport({
             onPointerMove={handlePointerMove}
             onPointerUp={finishDrag}
             onPointerCancel={finishDrag}
+            onPointerLeave={handlePointerLeave}
           />
           {marqueeRect ? <div className="selection-marquee" style={marqueeRect} /> : null}
           {transformOverlay && !alignMode && !mirrorMode && !rulerMode && !modifierActive ? (
@@ -2909,12 +2984,14 @@ export function WorkplaneViewport({
           shape={selectedShape}
           snap={snap}
           snapOpen={snapOpen}
-          accuracy={workspace.accuracy}
+          workspace={workspace}
           onUpdate={(patch, options) => onUpdateShape(selectedShape.id, patchWithResizeAnchor(selectedShape, patch, options?.resizeAxis, lastResizeAnchorRef.current))}
           onClose={() => onSelectShape(null)}
           onSnapChange={setSnap}
           onSnapOpenChange={setSnapOpen}
           onEditSketch={selectedShape.sketchProfile ? onEditSketch : undefined}
+          canSeparateParts={canSeparateParts}
+          onSeparateParts={onSeparateParts}
         />
       ) : null}
 
@@ -3442,7 +3519,16 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
   rebuildSelectionHelpers(state, shapes, selectedIds);
 }
 
-function rebuildModifierEdges(state: ThreeState | null, edges: CadModifierEdge[], selectedIds: number[], previewActive = false) {
+function modifierEdgeMaterialStyle(active: boolean, hovered: boolean, previewActive: boolean) {
+  const subduedSelectedPreviewEdge = previewActive && active && !hovered;
+  return {
+    color: active ? (hovered ? "#ffbf45" : "#ff8a1d") : hovered ? "#84edff" : "#17b7e5",
+    opacity: subduedSelectedPreviewEdge ? 0.18 : active || hovered ? 1 : 0.72,
+    linewidth: active || hovered ? 3 : 1,
+  };
+}
+
+function rebuildModifierEdges(state: ThreeState | null, edges: CadModifierEdge[], selectedIds: number[], previewActive = false, hoverId: number | null = null) {
   if (!state) return;
   disposeChildren(state.modifierLayer);
   const selected = new Set(selectedIds);
@@ -3451,17 +3537,19 @@ function rebuildModifierEdges(state: ThreeState | null, edges: CadModifierEdge[]
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(edge.points, 3));
     const active = selected.has(edge.id);
-    const subduedSelectedPreviewEdge = previewActive && active;
+    const hovered = hoverId === edge.id;
+    const style = modifierEdgeMaterialStyle(active, hovered, previewActive);
     const material = new THREE.LineBasicMaterial({
-      color: active ? "#ff8a1d" : "#17b7e5",
+      color: style.color,
       depthTest: false,
       depthWrite: false,
       transparent: true,
-      opacity: subduedSelectedPreviewEdge ? 0.18 : active ? 1 : 0.82,
+      opacity: style.opacity,
+      linewidth: style.linewidth,
     });
     const line = new THREE.Line(geometry, material);
     line.userData.modifierEdgeId = edge.id;
-    line.renderOrder = active ? 1002 : 1001;
+    line.renderOrder = hovered ? 1003 : active ? 1002 : 1001;
     state.modifierLayer.add(line);
   });
   state.needsRender = true;
@@ -4087,6 +4175,39 @@ function findSelectionHelper(state: ThreeState, id: string) {
 
 function findSelectedGroundFootprint(state: ThreeState, id: string) {
   return state.helperLayer.children.find((child) => child.name === "SelectedGroundFootprint" && child.userData.shapeId === id) ?? null;
+}
+
+function applyDragItemPreview(state: ThreeState, item: DragItem) {
+  if (!item.visual || !item.visual.parent) {
+    item.visual = findShapeObject(state, item.id);
+  }
+  if (!item.helper || !item.helper.parent) {
+    item.helper = findSelectionHelper(state, item.id);
+    item.helperBox = item.helper ? item.helper.box.clone() : null;
+  }
+
+  if (item.visual) {
+    if (!item.hadPreviewSimplified) {
+      setComplexEdgeVisibility(item.visual, false);
+      item.hadPreviewSimplified = true;
+    }
+    item.visual.position.x = item.nextX;
+    item.visual.position.z = item.nextZ;
+    item.visual.updateMatrixWorld(true);
+  }
+
+  if (item.helper && item.helperBox) {
+    item.helper.box.copy(item.helperBox);
+    item.helper.box.translate(new THREE.Vector3(item.nextX - item.startX, 0, item.nextZ - item.startZ));
+    item.helper.updateMatrixWorld(true);
+  }
+}
+
+function refreshDragPreviewObjects(state: ThreeState | null, drag: DragState | null) {
+  if (!state || !drag) return;
+  drag.items.forEach((item) => applyDragItemPreview(state, item));
+  updateSelectedGroundFootprintPreviews(state, drag);
+  state.needsRender = true;
 }
 
 function updateSelectedGroundFootprintPreviews(state: ThreeState, drag: DragState) {
@@ -4822,8 +4943,9 @@ function createHalfSphereGeometry(width: number, height: number, depth: number, 
 
 function disposeChildren(group: THREE.Group) {
   while (group.children.length > 0) {
-    const child = group.children.pop();
+    const child = group.children[group.children.length - 1];
     if (child) {
+      group.remove(child);
       disposeObject(child);
     }
   }

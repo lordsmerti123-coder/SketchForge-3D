@@ -3,6 +3,7 @@
 import { ChevronUp, CornerDownRight, Home, Link, Link2Off, Minus, Plus, Split, Trash2, Waves } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { SnapGridControl } from "@/components/workplane/ShapeInspector";
+import { mirrorSign, resizedImportedMeshPositions } from "@/lib/workplaneShapes";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
 import type { GridSize, SketchImage, SketchPoint, SketchProfile, SketchSegment, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
@@ -22,6 +23,7 @@ type SketchWorkspaceProps = {
   activePointId: string | null;
   selected: SketchSelection;
   measurement: SketchMeasurement;
+  pendingMeasurementStart: SketchPoint | null;
   initialSnap?: GridSize;
   initialWorkspace?: WorkplaneWorkspaceSettings;
   onPlanePoint: (point: { x: number; z: number }, handles?: { handleIn: { x: number; z: number }; handleOut: { x: number; z: number } }) => void;
@@ -42,6 +44,7 @@ type SketchWorkspaceProps = {
 
 type PathStep = { segment: SketchSegment; from: SketchPoint; to: SketchPoint };
 type DisplayPath = { id: string; points: SketchPoint[]; steps: PathStep[]; closed: boolean };
+type SketchReferenceFootprint = { fillD: string | null; outlineD: string | null };
 type PointerAction =
   | { kind: "bezier"; pointerId: number; origin: { x: number; z: number }; current: { x: number; z: number } }
   | { kind: "move-point"; pointerId: number; pointId: string; current: { x: number; z: number } }
@@ -121,6 +124,14 @@ function resizeSketchImage(start: SketchImage, handle: ResizeHandle, point: { x:
 function formatDimension(value: number, accuracy: 1 | 2 | 3) {
   const threshold = 0.5 * 10 ** -accuracy;
   return (Math.abs(value) < threshold ? 0 : value).toFixed(accuracy);
+}
+
+function dimensionPillSize(label: string, screenUnit: number, extra = 24) {
+  return {
+    width: Math.max(48, label.length * 7.5 + extra) * screenUnit,
+    height: 26 * screenUnit,
+    radius: 5 * screenUnit,
+  };
 }
 
 function cubicPoint(start: SketchPoint, first: { x: number; z: number }, second: { x: number; z: number }, end: SketchPoint, amount: number) {
@@ -239,6 +250,152 @@ function isRoundReference(shape: WorkplaneShape) {
   return ["cylinder", "sphere", "cone", "torus", "tube", "ring", "halfSphere"].includes(shape.kind);
 }
 
+function sketchReferencePoint(shape: WorkplaneShape, x: number, z: number) {
+  return {
+    x: shape.x + x * mirrorSign(shape.mirrorX),
+    z: shape.z + z * mirrorSign(shape.mirrorZ),
+  };
+}
+
+function pointKey(point: { x: number; z: number }, tolerance: number) {
+  return `${Math.round(point.x / tolerance)},${Math.round(point.z / tolerance)}`;
+}
+
+function triangleArea2d(a: { x: number; z: number }, b: { x: number; z: number }, c: { x: number; z: number }) {
+  return Math.abs((b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z)) / 2;
+}
+
+function trianglePath(points: Array<{ x: number; z: number }>) {
+  return `M ${points[0].x} ${points[0].z} L ${points[1].x} ${points[1].z} L ${points[2].x} ${points[2].z} Z`;
+}
+
+function convexHull(points: Array<{ x: number; z: number }>) {
+  const unique = new Map<string, { x: number; z: number }>();
+  points.forEach((point) => unique.set(pointKey(point, 0.001), point));
+  const sorted = [...unique.values()].sort((a, b) => a.x === b.x ? a.z - b.z : a.x - b.x);
+  if (sorted.length <= 2) return sorted;
+  const cross = (origin: { x: number; z: number }, a: { x: number; z: number }, b: { x: number; z: number }) =>
+    (a.x - origin.x) * (b.z - origin.z) - (a.z - origin.z) * (b.x - origin.x);
+  const lower: Array<{ x: number; z: number }> = [];
+  sorted.forEach((point) => {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop();
+    lower.push(point);
+  });
+  const upper: Array<{ x: number; z: number }> = [];
+  [...sorted].reverse().forEach((point) => {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop();
+    upper.push(point);
+  });
+  lower.pop();
+  upper.pop();
+  return [...lower, ...upper];
+}
+
+function boundaryPath(points: Array<{ x: number; z: number }>, triangles: number[][], tolerance: number) {
+  const pointByKey = new Map<string, { x: number; z: number }>();
+  const edgeCounts = new Map<string, { count: number; a: string; b: string }>();
+  const addEdge = (aIndex: number, bIndex: number) => {
+    const a = points[aIndex];
+    const b = points[bIndex];
+    const aKey = pointKey(a, tolerance);
+    const bKey = pointKey(b, tolerance);
+    pointByKey.set(aKey, a);
+    pointByKey.set(bKey, b);
+    const key = aKey < bKey ? `${aKey}|${bKey}` : `${bKey}|${aKey}`;
+    const current = edgeCounts.get(key);
+    edgeCounts.set(key, current ? { ...current, count: current.count + 1 } : { count: 1, a: aKey, b: bKey });
+  };
+  triangles.forEach(([a, b, c]) => {
+    addEdge(a, b);
+    addEdge(b, c);
+    addEdge(c, a);
+  });
+
+  const boundaryEdges = [...edgeCounts.values()].filter((edge) => edge.count === 1);
+  if (boundaryEdges.length === 0) return null;
+  const adjacency = new Map<string, string[]>();
+  boundaryEdges.forEach(({ a, b }) => {
+    adjacency.set(a, [...(adjacency.get(a) ?? []), b]);
+    adjacency.set(b, [...(adjacency.get(b) ?? []), a]);
+  });
+  const unused = new Set(boundaryEdges.map(({ a, b }) => (a < b ? `${a}|${b}` : `${b}|${a}`)));
+  const takeEdge = (a: string, b: string) => unused.delete(a < b ? `${a}|${b}` : `${b}|${a}`);
+  const hasEdge = (a: string, b: string) => unused.has(a < b ? `${a}|${b}` : `${b}|${a}`);
+  const commands: string[] = [];
+
+  while (unused.size > 0) {
+    const firstKey = unused.values().next().value as string;
+    const [start, firstNext] = firstKey.split("|");
+    const chain = [start, firstNext];
+    takeEdge(start, firstNext);
+    while (chain.length <= boundaryEdges.length + 1) {
+      const current = chain[chain.length - 1];
+      const previous = chain[chain.length - 2];
+      const next = (adjacency.get(current) ?? []).find((candidate) => candidate !== previous && hasEdge(current, candidate))
+        ?? (adjacency.get(current) ?? []).find((candidate) => hasEdge(current, candidate));
+      if (!next) break;
+      takeEdge(current, next);
+      chain.push(next);
+      if (next === start) break;
+    }
+    const startPoint = pointByKey.get(chain[0]);
+    if (!startPoint) continue;
+    const pointsD = chain
+      .slice(1)
+      .map((key) => pointByKey.get(key))
+      .filter((point): point is { x: number; z: number } => Boolean(point))
+      .map((point) => `L ${point.x} ${point.z}`);
+    commands.push(`M ${startPoint.x} ${startPoint.z} ${pointsD.join(" ")}${chain[chain.length - 1] === chain[0] ? " Z" : ""}`);
+  }
+
+  return commands.join(" ");
+}
+
+function importedMeshFootprint(shape: WorkplaneShape): SketchReferenceFootprint | null {
+  if (!shape.importedMesh) return null;
+  const positions = resizedImportedMeshPositions(shape);
+  if (positions.length < 9) return null;
+  let minY = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < positions.length; index += 3) {
+    minY = Math.min(minY, positions[index]);
+  }
+  if (!Number.isFinite(minY)) return null;
+
+  const tolerance = Math.max(0.001, Math.max(shape.width, shape.depth, shape.height) / 100000);
+  const bottomTolerance = Math.max(0.025, shape.height * 0.003);
+  const points: Array<{ x: number; z: number }> = [];
+  const triangles: number[][] = [];
+  const allProjected: Array<{ x: number; z: number }> = [];
+
+  for (let index = 0; index + 8 < positions.length; index += 9) {
+    const ys = [positions[index + 1], positions[index + 4], positions[index + 7]];
+    const projected = [
+      sketchReferencePoint(shape, positions[index], positions[index + 2]),
+      sketchReferencePoint(shape, positions[index + 3], positions[index + 5]),
+      sketchReferencePoint(shape, positions[index + 6], positions[index + 8]),
+    ];
+    allProjected.push(...projected);
+    if (!ys.every((value) => value <= minY + bottomTolerance) || triangleArea2d(projected[0], projected[1], projected[2]) <= tolerance) {
+      continue;
+    }
+    const offset = points.length;
+    points.push(...projected);
+    triangles.push([offset, offset + 1, offset + 2]);
+  }
+
+  if (triangles.length > 0) {
+    return {
+      fillD: triangles.length <= 5000 ? triangles.map((triangle) => trianglePath(triangle.map((index) => points[index]))).join(" ") : null,
+      outlineD: boundaryPath(points, triangles, tolerance),
+    };
+  }
+
+  const hull = convexHull(allProjected);
+  if (hull.length < 3) return null;
+  const d = `M ${hull[0].x} ${hull[0].z} ${hull.slice(1).map((point) => `L ${point.x} ${point.z}`).join(" ")} Z`;
+  return { fillD: d, outlineD: d };
+}
+
 export function SketchWorkspace({
   profile,
   referenceShapes,
@@ -246,6 +403,7 @@ export function SketchWorkspace({
   activePointId,
   selected,
   measurement,
+  pendingMeasurementStart,
   initialSnap,
   initialWorkspace,
   onPlanePoint,
@@ -270,9 +428,17 @@ export function SketchWorkspace({
   const [pan, setPan] = useState({ x: 0, z: 0 });
   const [hover, setHover] = useState<{ x: number; z: number } | null>(null);
   const [pointerAction, setPointerAction] = useState<PointerAction | null>(null);
+  const [svgSize, setSvgSize] = useState({ width: 0, height: 0 });
   const svgRef = useRef<SVGSVGElement | null>(null);
   const width = workspace.width / zoom;
   const depth = workspace.depth / zoom;
+  const screenUnit = useMemo(() => {
+    const fittedScale = Math.min(
+      svgSize.width > 0 ? svgSize.width / width : 0,
+      svgSize.height > 0 ? svgSize.height / depth : 0,
+    );
+    return fittedScale > 0 ? 1 / fittedScale : Math.max(width, depth) / 720;
+  }, [depth, svgSize.height, svgSize.width, width]);
   const displayProfile = useMemo(() => {
     if (pointerAction?.kind === "move-point") {
       const source = profile.points.find((point) => point.id === pointerAction.pointId);
@@ -355,6 +521,19 @@ export function SketchWorkspace({
       z: clamp(snapValue(local.y, step), -workspace.depth / 2, workspace.depth / 2),
     };
   };
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const updateSize = () => {
+      const bounds = svg.getBoundingClientRect();
+      setSvgSize({ width: bounds.width, height: bounds.height });
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, []);
 
   const beginPan = (event: ReactPointerEvent<SVGElement>) => {
     event.preventDefault();
@@ -472,7 +651,12 @@ export function SketchWorkspace({
   const measurementLabel = formatDimension(measurementLength, workspace.accuracy);
   const previewLength = activePoint && hover ? Math.hypot(hover.x - activePoint.x, hover.z - activePoint.z) : 0;
   const previewLabel = formatDimension(previewLength, workspace.accuracy);
-  const pillScale = 1 / zoom;
+  const labelOffset = 22 * screenUnit;
+  const pointRadius = 5 * screenUnit;
+  const controlPointRadius = 6 * screenUnit;
+  const hoverPointRadius = 5 * screenUnit;
+  const handleSize = 12 * screenUnit;
+  const handleRadius = 2 * screenUnit;
   const selectedImageBounds = selectedImage ? {
     minX: selectedImage.x - selectedImage.width / 2,
     maxX: selectedImage.x + selectedImage.width / 2,
@@ -489,6 +673,10 @@ export function SketchWorkspace({
     { id: "sw", x: selectedImageBounds.minX, z: selectedImageBounds.maxZ },
     { id: "w", x: selectedImageBounds.minX, z: selectedImage.z },
   ] : [];
+  const referenceFootprints = useMemo(
+    () => new Map(referenceShapes.map((shape) => [shape.id, importedMeshFootprint(shape)])),
+    [referenceShapes],
+  );
 
   return (
     <main className="sketch-workspace-stage">
@@ -556,15 +744,23 @@ export function SketchWorkspace({
             ))}
           </g>
           <g className="sketch-reference-shapes" pointerEvents="none">
-            {referenceShapes.filter((shape) => !shape.hidden).map((shape) => (
-              <g key={shape.id} transform={`rotate(${shape.rotation ?? 0} ${shape.x} ${shape.z})`}>
-                {isRoundReference(shape) ? (
-                  <ellipse cx={shape.x} cy={shape.z} rx={shape.width / 2} ry={shape.depth / 2} />
-                ) : (
-                  <rect x={shape.x - shape.width / 2} y={shape.z - shape.depth / 2} width={shape.width} height={shape.depth} />
-                )}
-              </g>
-            ))}
+            {referenceShapes.filter((shape) => !shape.hidden).map((shape) => {
+              const footprint = referenceFootprints.get(shape.id);
+              return (
+                <g key={shape.id} transform={`rotate(${shape.rotation ?? 0} ${shape.x} ${shape.z})`}>
+                  {footprint?.fillD || footprint?.outlineD ? (
+                    <>
+                      {footprint.fillD ? <path className="sketch-reference-mesh-face" d={footprint.fillD} /> : null}
+                      {footprint.outlineD ? <path className="sketch-reference-mesh-outline" d={footprint.outlineD} /> : null}
+                    </>
+                  ) : isRoundReference(shape) ? (
+                    <ellipse cx={shape.x} cy={shape.z} rx={shape.width / 2} ry={shape.depth / 2} />
+                  ) : (
+                    <rect x={shape.x - shape.width / 2} y={shape.z - shape.depth / 2} width={shape.width} height={shape.depth} />
+                  )}
+                </g>
+              );
+            })}
           </g>
           <rect className="sketch-plate-border" x={-workspace.width / 2} y={-workspace.depth / 2} width={workspace.width} height={workspace.depth} pointerEvents="none" />
           {pointerAction?.kind === "marquee" ? (
@@ -604,53 +800,68 @@ export function SketchWorkspace({
               const dimension = segmentDimension(segment, pointById);
               if (!dimension) return null;
               const label = formatDimension(dimension.length, workspace.accuracy);
-              const pillWidth = Math.max(7.2, label.length * 1.2 + 2.4) * pillScale;
-              const pillHeight = 4.2 * pillScale;
+              const pill = dimensionPillSize(label, screenUnit, 18);
               return (
-                <g key={`dimension-${segment.id}`} transform={`translate(${dimension.midpoint.x} ${dimension.midpoint.z - 4 * pillScale})`}>
-                  <rect x={-pillWidth / 2} y={-pillHeight / 2} width={pillWidth} height={pillHeight} rx={0.55 * pillScale} />
-                  <text y={0.78 * pillScale} fontSize={2.25 * pillScale}>{label}</text>
+                <g key={`dimension-${segment.id}`} transform={`translate(${dimension.midpoint.x} ${dimension.midpoint.z - labelOffset})`}>
+                  <rect x={-pill.width / 2} y={-pill.height / 2} width={pill.width} height={pill.height} rx={pill.radius} />
+                  <text y={5 * screenUnit} fontSize={13 * screenUnit}>{label}</text>
                 </g>
               );
             })}
           </g>
           {activePoint && hover && ["line", "bezier", "smooth"].includes(tool) ? <line className="sketch-preview-line" x1={activePoint.x} y1={activePoint.z} x2={hover.x} y2={hover.z} pointerEvents="none" /> : null}
           {activePoint && hover && ["line", "bezier", "smooth"].includes(tool) ? (
-            <g className="sketch-segment-dimensions preview" pointerEvents="none" transform={`translate(${(activePoint.x + hover.x) / 2} ${(activePoint.z + hover.z) / 2 - 4 * pillScale})`}>
-              <rect x={-(Math.max(7.2, previewLabel.length * 1.2 + 2.4) * pillScale) / 2} y={-(4.2 * pillScale) / 2} width={Math.max(7.2, previewLabel.length * 1.2 + 2.4) * pillScale} height={4.2 * pillScale} rx={0.55 * pillScale} />
-              <text y={0.78 * pillScale} fontSize={2.25 * pillScale}>{previewLabel}</text>
+            <g className="sketch-segment-dimensions preview" pointerEvents="none" transform={`translate(${(activePoint.x + hover.x) / 2} ${(activePoint.z + hover.z) / 2 - labelOffset})`}>
+              {(() => {
+                const pill = dimensionPillSize(previewLabel, screenUnit, 18);
+                return (
+                  <>
+                    <rect x={-pill.width / 2} y={-pill.height / 2} width={pill.width} height={pill.height} rx={pill.radius} />
+                    <text y={5 * screenUnit} fontSize={13 * screenUnit}>{previewLabel}</text>
+                  </>
+                );
+              })()}
             </g>
           ) : null}
           {pointerAction?.kind === "bezier" ? (
             <g className="sketch-drag-handles" pointerEvents="none">
               <line x1={pointerAction.origin.x * 2 - pointerAction.current.x} y1={pointerAction.origin.z * 2 - pointerAction.current.z} x2={pointerAction.current.x} y2={pointerAction.current.z} />
-              <circle cx={pointerAction.origin.x} cy={pointerAction.origin.z} r={1.2 / Math.sqrt(zoom)} />
+              <circle cx={pointerAction.origin.x} cy={pointerAction.origin.z} r={controlPointRadius} />
             </g>
           ) : null}
           {measurement ? (
             <g className="sketch-measurement">
               <line x1={measurement.start.x} y1={measurement.start.z} x2={measurement.end.x} y2={measurement.end.z} />
+              <circle className="sketch-measurement-point" cx={measurement.start.x} cy={measurement.start.z} r={pointRadius} pointerEvents="none" />
+              <circle className="sketch-measurement-point" cx={measurement.end.x} cy={measurement.end.z} r={pointRadius} pointerEvents="none" />
               <g
                 className="sketch-measurement-pill"
                 role="button"
                 aria-label="Remove measurement"
-                transform={`translate(${(measurement.start.x + measurement.end.x) / 2} ${(measurement.start.z + measurement.end.z) / 2 - 4 * pillScale})`}
+                transform={`translate(${(measurement.start.x + measurement.end.x) / 2} ${(measurement.start.z + measurement.end.z) / 2 - labelOffset})`}
                 onPointerDown={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
                   onClearMeasurement();
                 }}
               >
-                <rect x={-(Math.max(9, measurementLabel.length * 1.2 + 4.2) * pillScale) / 2} y={-(4.2 * pillScale) / 2} width={Math.max(9, measurementLabel.length * 1.2 + 4.2) * pillScale} height={4.2 * pillScale} rx={0.55 * pillScale} />
-                <text x={-0.9 * pillScale} y={0.78 * pillScale} fontSize={2.25 * pillScale}>{measurementLabel}</text>
-                <text className="remove" x={(Math.max(9, measurementLabel.length * 1.2 + 4.2) * pillScale) / 2 - 1.45 * pillScale} y={0.82 * pillScale} fontSize={2.45 * pillScale}>×</text>
+                <rect x={-dimensionPillSize(measurementLabel, screenUnit, 30).width / 2} y={-dimensionPillSize(measurementLabel, screenUnit, 30).height / 2} width={dimensionPillSize(measurementLabel, screenUnit, 30).width} height={dimensionPillSize(measurementLabel, screenUnit, 30).height} rx={dimensionPillSize(measurementLabel, screenUnit, 30).radius} />
+                <text x={-5 * screenUnit} y={5 * screenUnit} fontSize={13 * screenUnit}>{measurementLabel}</text>
+                <text className="remove" x={dimensionPillSize(measurementLabel, screenUnit, 30).width / 2 - 8 * screenUnit} y={5 * screenUnit} fontSize={14 * screenUnit}>x</text>
               </g>
+            </g>
+          ) : null}
+          {pendingMeasurementStart ? (
+            <g className="sketch-measurement pending" pointerEvents="none">
+              {hover ? <line x1={pendingMeasurementStart.x} y1={pendingMeasurementStart.z} x2={hover.x} y2={hover.z} /> : null}
+              <circle className="sketch-measurement-point pending" cx={pendingMeasurementStart.x} cy={pendingMeasurementStart.z} r={pointRadius} />
+              {hover ? <circle className="sketch-measurement-point hover" cx={hover.x} cy={hover.z} r={pointRadius} /> : null}
             </g>
           ) : null}
           {selectedPoint && tool === "select" ? (
             <g className="sketch-curve-handles">
-              {selectedPoint.handleIn ? <><line x1={selectedPoint.x} y1={selectedPoint.z} x2={selectedPoint.handleIn.x} y2={selectedPoint.handleIn.z} /><circle data-sketch-entity="handle" cx={selectedPoint.handleIn.x} cy={selectedPoint.handleIn.z} r={1 / Math.sqrt(zoom)} onPointerDown={(event) => event.button === 1 ? beginPan(event) : beginEntityDrag(event, { kind: "move-handle", pointerId: event.pointerId, pointId: selectedPoint.id, handle: "in", current: selectedPoint.handleIn! })} /></> : null}
-              {selectedPoint.handleOut ? <><line x1={selectedPoint.x} y1={selectedPoint.z} x2={selectedPoint.handleOut.x} y2={selectedPoint.handleOut.z} /><circle data-sketch-entity="handle" cx={selectedPoint.handleOut.x} cy={selectedPoint.handleOut.z} r={1 / Math.sqrt(zoom)} onPointerDown={(event) => event.button === 1 ? beginPan(event) : beginEntityDrag(event, { kind: "move-handle", pointerId: event.pointerId, pointId: selectedPoint.id, handle: "out", current: selectedPoint.handleOut! })} /></> : null}
+              {selectedPoint.handleIn ? <><line x1={selectedPoint.x} y1={selectedPoint.z} x2={selectedPoint.handleIn.x} y2={selectedPoint.handleIn.z} /><circle data-sketch-entity="handle" cx={selectedPoint.handleIn.x} cy={selectedPoint.handleIn.z} r={controlPointRadius} onPointerDown={(event) => event.button === 1 ? beginPan(event) : beginEntityDrag(event, { kind: "move-handle", pointerId: event.pointerId, pointId: selectedPoint.id, handle: "in", current: selectedPoint.handleIn! })} /></> : null}
+              {selectedPoint.handleOut ? <><line x1={selectedPoint.x} y1={selectedPoint.z} x2={selectedPoint.handleOut.x} y2={selectedPoint.handleOut.z} /><circle data-sketch-entity="handle" cx={selectedPoint.handleOut.x} cy={selectedPoint.handleOut.z} r={controlPointRadius} onPointerDown={(event) => event.button === 1 ? beginPan(event) : beginEntityDrag(event, { kind: "move-handle", pointerId: event.pointerId, pointId: selectedPoint.id, handle: "out", current: selectedPoint.handleOut! })} /></> : null}
             </g>
           ) : null}
           <g className="sketch-points">
@@ -661,7 +872,7 @@ export function SketchWorkspace({
                 key={point.id}
                 cx={point.x}
                 cy={point.z}
-                r={0.82 / Math.sqrt(zoom)}
+                r={pointRadius}
                 onPointerDown={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
@@ -689,24 +900,40 @@ export function SketchWorkspace({
                 height={selectedImage.depth}
                 pointerEvents="none"
               />
-              <g className="sketch-image-dimension width" pointerEvents="none" transform={`translate(${selectedImage.x} ${selectedImageBounds.minZ - 4 * pillScale})`}>
-                <rect x={-6 * pillScale} y={-2.1 * pillScale} width={12 * pillScale} height={4.2 * pillScale} rx={0.55 * pillScale} />
-                <text y={0.78 * pillScale} fontSize={2.25 * pillScale}>{formatDimension(selectedImage.width, workspace.accuracy)}</text>
+              <g className="sketch-image-dimension width" pointerEvents="none" transform={`translate(${selectedImage.x} ${selectedImageBounds.minZ - labelOffset})`}>
+                {(() => {
+                  const label = formatDimension(selectedImage.width, workspace.accuracy);
+                  const pill = dimensionPillSize(label, screenUnit, 18);
+                  return (
+                    <>
+                      <rect x={-pill.width / 2} y={-pill.height / 2} width={pill.width} height={pill.height} rx={pill.radius} />
+                      <text y={5 * screenUnit} fontSize={13 * screenUnit}>{label}</text>
+                    </>
+                  );
+                })()}
               </g>
-              <g className="sketch-image-dimension depth" pointerEvents="none" transform={`translate(${selectedImageBounds.maxX + 7 * pillScale} ${selectedImage.z})`}>
-                <rect x={-6 * pillScale} y={-2.1 * pillScale} width={12 * pillScale} height={4.2 * pillScale} rx={0.55 * pillScale} />
-                <text y={0.78 * pillScale} fontSize={2.25 * pillScale}>{formatDimension(selectedImage.depth, workspace.accuracy)}</text>
+              <g className="sketch-image-dimension depth" pointerEvents="none" transform={`translate(${selectedImageBounds.maxX + 34 * screenUnit} ${selectedImage.z})`}>
+                {(() => {
+                  const label = formatDimension(selectedImage.depth, workspace.accuracy);
+                  const pill = dimensionPillSize(label, screenUnit, 18);
+                  return (
+                    <>
+                      <rect x={-pill.width / 2} y={-pill.height / 2} width={pill.width} height={pill.height} rx={pill.radius} />
+                      <text y={5 * screenUnit} fontSize={13 * screenUnit}>{label}</text>
+                    </>
+                  );
+                })()}
               </g>
               {imageResizeHandles.map((handle) => (
                 <rect
                   key={handle.id}
                   data-sketch-entity="image-handle"
                   className={`sketch-image-resize-handle handle-${handle.id}`}
-                  x={handle.x - 1.05 * pillScale}
-                  y={handle.z - 1.05 * pillScale}
-                  width={2.1 * pillScale}
-                  height={2.1 * pillScale}
-                  rx={0.2 * pillScale}
+                  x={handle.x - handleSize / 2}
+                  y={handle.z - handleSize / 2}
+                  width={handleSize}
+                  height={handleSize}
+                  rx={handleRadius}
                   onPointerDown={(event) => {
                     if (event.button === 1) {
                       beginPan(event);
@@ -728,7 +955,7 @@ export function SketchWorkspace({
               ))}
             </g>
           ) : null}
-          {hover && ["line", "bezier", "smooth", "measure"].includes(tool) ? <circle className="sketch-cursor-point" cx={hover.x} cy={hover.z} r={0.7 / Math.sqrt(zoom)} pointerEvents="none" /> : null}
+          {hover && ["line", "bezier", "smooth", "measure"].includes(tool) ? <circle className="sketch-cursor-point" cx={hover.x} cy={hover.z} r={hoverPointRadius} pointerEvents="none" /> : null}
         </svg>
       </section>
       {selectedImage && tool === "select" ? (
