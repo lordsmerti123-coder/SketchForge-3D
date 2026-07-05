@@ -51,15 +51,14 @@ No login. No server project storage. No heavyweight CAD install just to make a u
 
 ## Getting Started
 
-There are three common ways to run SketchForge. If you are not sure which one to choose, use Docker.
+There are two common ways to run SketchForge. If you are not sure which one to choose, use Docker.
 
 | Path | Best for | Difficulty |
 | --- | --- | --- |
 | Docker / FabLab server | Teachers, classrooms, shared computers, local network hosting | Recommended |
 | Local development | Developers who want to edit the code | Medium |
-| Manual static hosting | Server admins who cannot use Docker | Advanced |
 
-SketchForge is local-first in all three modes. The app files may be served from a computer or server, but projects stay in each user's browser storage. STL and OBJ exports download through the user's browser. SketchForge does not upload models to a SketchForge cloud service.
+SketchForge is local-first in both modes. The app files may be served from a computer or server, but projects stay in each user's browser storage. STL and OBJ exports download through the user's browser. SketchForge does not upload models to a SketchForge cloud service.
 
 ### Download the Project
 
@@ -276,55 +275,6 @@ Build a static export:
 npm run export
 ```
 
-## Manual Static Deployment (Advanced)
-
-Use this only if Docker is not allowed on your server. This path is harder because you must install and maintain Node.js, npm, a static web server, firewall rules, startup behavior, and future updates yourself.
-
-### What You Need
-
-- Node.js 20 or newer
-- npm
-- Nginx, Apache, Caddy, or another static web server
-- permission to open a network port on the server firewall
-
-### Build the Static Files
-
-Linux or macOS:
-
-```bash
-npm ci
-STATIC_EXPORT=true npm run build
-```
-
-Windows PowerShell:
-
-```powershell
-npm ci
-$env:STATIC_EXPORT = "true"
-npm run build
-Remove-Item Env:STATIC_EXPORT
-```
-
-The deployable files are created in:
-
-```text
-apps/web/out
-```
-
-Configure your web server to serve `apps/web/out`.
-
-For single-page app routing, unknown paths should fall back to:
-
-```text
-index.html
-```
-
-The Docker Nginx config is a good reference:
-
-[`deploy/docker/nginx.conf`](deploy/docker/nginx.conf)
-
-For each update, pull or download the new source, install dependencies, rebuild `apps/web/out`, replace the served files, and reload the web server.
-
 ## Project Layout
 
 ```text
@@ -337,6 +287,8 @@ apps/web/src/lib/           Shared utilities
 apps/web/public/assets/     Static app images, icons, logos, shape assets
 scripts/                    Build and local automation helpers
 docs/media/                 README screenshots and demo videos
+docs/mcp/                   MCP client configuration examples
+docs/skills/                Optional AI-agent skill bundles
 deploy/docker/              Docker, Compose, and Nginx deployment files
 .github/                    Issue templates and community files
 ```
@@ -377,3 +329,74 @@ Please do not open public issues for security-sensitive reports. Read [.github/S
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## SketchForge MCP Skill
+
+SketchForge includes a local MCP server for AI clients that support MCP tools. It lets an agent inspect and control a live local editor tab: list open editors, read the scene, create/update/select objects, group/cut/separate parts, list CAD edge ids, apply chamfer or fillet, inspect errors, and capture viewport images.
+
+This is for local development only. Run SketchForge with `npm run dev`; the MCP route is disabled in production builds and Docker/static hosting.
+
+### Start SketchForge for MCP
+
+From the SketchForge project folder:
+
+```bash
+npm install
+npm run dev
+```
+
+Open an editor tab:
+
+```text
+http://127.0.0.1:3000/?editor=1
+```
+
+The AI client starts the MCP server with:
+
+```bash
+node scripts/sketchforge-mcp-server.mjs
+```
+
+### Codex
+
+The Codex skill is included at:
+
+```text
+docs/skills/sketchforge-mcp-skill
+```
+
+Install it into your Codex skills folder.
+
+Windows PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills" | Out-Null
+Copy-Item -Recurse -Force "docs\skills\sketchforge-mcp-skill" "$env:USERPROFILE\.codex\skills\sketchforge-mcp-skill"
+```
+
+macOS or Linux:
+
+```bash
+mkdir -p ~/.codex/skills
+cp -R docs/skills/sketchforge-mcp-skill ~/.codex/skills/
+```
+
+Then add an MCP server entry to your Codex config. Use [`docs/mcp/codex-config.example.toml`](docs/mcp/codex-config.example.toml) as the template and replace the script path with the absolute path on your machine. Restart Codex after changing the config.
+
+Once installed, ask Codex:
+
+```text
+Use $sketchforge-mcp-skill to list my open SketchForge editors and inspect the current scene.
+```
+
+### Claude
+
+Claude does not use Codex `SKILL.md` files, but it can use the same SketchForge MCP server. Add the server to Claude Desktop's MCP config using [`docs/mcp/claude-desktop-config.example.json`](docs/mcp/claude-desktop-config.example.json) as the template, replacing the script path with the absolute path on your machine.
+
+After restarting Claude Desktop, ask:
+
+```text
+Use the SketchForge MCP tools to list open editors, inspect the scene, and modify the selected object.
+```
+
+The main tool names are `sketchforge_list_editors`, `sketchforge_read_scene`, `sketchforge_list_objects`, `sketchforge_create_shape`, `sketchforge_update_object`, `sketchforge_list_edges`, `sketchforge_apply_edge_treatment`, and `sketchforge_capture_image`.
