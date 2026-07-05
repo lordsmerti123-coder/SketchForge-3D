@@ -92,13 +92,23 @@ If `docker` is not recognized, install Docker Desktop and open it once before ru
 
 ### Start SketchForge
 
+#### Compose (Build images locally)
+
 From the SketchForge project folder, run:
 
 ```bash
 docker compose -f deploy/docker/compose.yaml up --build -d
 ```
 
-The first start can take a few minutes because Docker builds the app. After it finishes, open this on the same computer:
+The first start can take a few minutes because Docker builds the app.
+
+#### Standalone (Prebuilt)
+
+```bash
+docker run -d --name sketchforge --restart unless-stopped -p 3000:80 ghcr.io/Formsmith746/sketchforge-3d:latest
+```
+
+After running, open this on the same computer:
 
 ```text
 http://127.0.0.1:3000/
