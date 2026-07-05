@@ -102,6 +102,14 @@ docker compose -f deploy/docker/compose.yaml up --build -d
 
 The first start can take a few minutes because Docker builds the app.
 
+#### Compose (Prebuilt)
+
+From the SketchForge project folder or with the downloaded `deploy/docker/compose-ghcr.yaml`, run:
+
+```bash
+docker compose -f deploy/docker/compose-ghcr.yaml up -d
+```
+
 #### Standalone (Prebuilt)
 
 ```bash
