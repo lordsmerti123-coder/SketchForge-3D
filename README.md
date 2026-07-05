@@ -113,7 +113,7 @@ docker compose -f deploy/docker/compose-ghcr.yaml up -d
 #### Standalone (Prebuilt)
 
 ```bash
-docker run -d --name sketchforge --restart unless-stopped -p 3000:80 ghcr.io/Formsmith746/sketchforge-3d:latest
+docker run -d --name sketchforge --restart unless-stopped -p 3000:80 ghcr.io/formsmith746/sketchforge-3d:latest
 ```
 
 After running, open this on the same computer:
