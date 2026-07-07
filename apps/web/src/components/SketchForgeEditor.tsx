@@ -79,7 +79,7 @@ import {
 import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierKind, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse } from "@/lib/cadModifierTypes";
 import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, SketchImage, SketchPoint, SketchProfile, SketchSegment, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
-export { importedShapeFromStl };
+export { importedShapeFromStl, importedShapeFromSvg };
 
 type TopPanel = "import" | "export" | "tips" | "profile" | "settings" | null;
 type ExportFormat = "stl" | "obj";
@@ -2102,6 +2102,7 @@ function bakeShapeTransformIntoMesh(shape: WorkplaneShape): WorkplaneShape {
 function importedShapeFromSvg(fileName: string, source: string): WorkplaneShape {
   const parsed = svgLoader.parse(source);
   const rawPositions: number[] = [];
+  const rawNormals: number[] = [];
 
   parsed.paths.forEach((path) => {
     SVGLoader.createShapes(path).forEach((svgShape) => {
@@ -2113,10 +2114,17 @@ function importedShapeFromSvg(fileName: string, source: string): WorkplaneShape 
       });
       rawGeometry.rotateX(-Math.PI / 2);
       const geometry = rawGeometry.index ? rawGeometry.toNonIndexed() : rawGeometry;
+      geometry.computeVertexNormals();
       const position = geometry.getAttribute("position");
+      const normal = geometry.getAttribute("normal");
       for (let i = 0; i < position.count; i += 1) {
         rawPositions.push(position.getX(i), position.getY(i), position.getZ(i));
+        if (normal) {
+          rawNormals.push(normal.getX(i), normal.getY(i), normal.getZ(i));
+        }
       }
+      if (geometry !== rawGeometry) geometry.dispose();
+      rawGeometry.dispose();
     });
   });
 
@@ -2146,9 +2154,13 @@ function importedShapeFromSvg(fileName: string, source: string): WorkplaneShape 
   const height = Math.max(1, maxY - minY);
   const depth = Math.max(1, maxZ - minZ);
   const positions: number[] = [];
+  const normals: number[] = [];
 
   for (let i = 0; i < rawPositions.length; i += 3) {
     positions.push(rawPositions[i] - centerX, rawPositions[i + 1] - minY, rawPositions[i + 2] - centerZ);
+    if (rawNormals.length === rawPositions.length) {
+      normals.push(rawNormals[i], rawNormals[i + 1], rawNormals[i + 2]);
+    }
   }
 
   return {
@@ -2167,6 +2179,7 @@ function importedShapeFromSvg(fileName: string, source: string): WorkplaneShape 
     rotationZ: 0,
     importedMesh: {
       positions,
+      normals: normals.length ? normals : undefined,
       baseWidth: width,
       baseDepth: depth,
       baseHeight: height,
@@ -7552,8 +7565,9 @@ export function SketchForgeEditor({
 
   const selectFile = useCallback(async (file: File) => {
     const isStep = /\.(step|stp)$/i.test(file.name);
-    if (!isStep && !importExtensionSupported(file.name)) {
-      setNotice("Unsupported file type. Use STL or STEP.");
+    const isSvg = /\.svg$/i.test(file.name) || file.type === "image/svg+xml";
+    if (!isStep && !isSvg && !importExtensionSupported(file.name)) {
+      setNotice("Unsupported file type. Use STL, STEP, or SVG.");
       return;
     }
 
@@ -7563,6 +7577,8 @@ export function SketchForgeEditor({
         setNotice("Reading STEP… first import loads the OpenCascade kernel (~22 MB), one time per session");
         const { importedShapeFromStep } = await import("@/lib/stepImport");
         nextShape = await importedShapeFromStep(file.name, await file.arrayBuffer());
+      } else if (isSvg) {
+        nextShape = importedShapeFromSvg(file.name, await file.text());
       } else {
         nextShape = importedShapeFromStl(file.name, await file.arrayBuffer());
       }
@@ -8044,7 +8060,7 @@ export function SketchForgeEditor({
         ref={fileInputRef}
         className="hidden-file-input"
         type="file"
-        accept=".stl,.step,.stp"
+        accept=".stl,.step,.stp,.svg,image/svg+xml"
         onChange={(event) => {
           if (event.currentTarget.files) {
             selectFiles(event.currentTarget.files);
@@ -8565,7 +8581,7 @@ function TopActionPanel({
             }}
           >
             <ToolbarImportIcon />
-            <strong>Drop STL or STEP files</strong>
+            <strong>Drop STL, STEP, or SVG files</strong>
             <span>or click to choose from your computer</span>
           </button>
         </div>

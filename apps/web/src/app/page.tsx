@@ -2,7 +2,7 @@
 
 import { Clock3, EllipsisVertical, FileUp, Grid3X3, HomeIcon, List, Pencil, Plus, Search, Settings, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SketchForgeEditor, importedShapeFromStl } from "@/components/SketchForgeEditor";
+import { SketchForgeEditor, importedShapeFromStl, importedShapeFromSvg } from "@/components/SketchForgeEditor";
 import { createLocalId } from "@/lib/localIds";
 import { importExtensionSupported } from "@/lib/stlImport";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
@@ -236,7 +236,7 @@ function newProject(name: string, index: number, shapeCount = 0): DashboardProje
 }
 
 function projectNameFromFileName(fileName: string) {
-  return fileName.replace(/\.[^.]+$/, "").trim() || "Imported STL design";
+  return fileName.replace(/\.[^.]+$/, "").trim() || "Imported design";
 }
 
 export default function Home() {
@@ -255,7 +255,7 @@ export default function Home() {
   const [dashboardNotice, setDashboardNotice] = useState("");
   const [projectShapesById, setProjectShapesById] = useState<Record<string, ProjectShapeCacheEntry>>({});
   const projectsJsonRef = useRef("");
-  const dashboardStlInputRef = useRef<HTMLInputElement | null>(null);
+  const dashboardImportInputRef = useRef<HTMLInputElement | null>(null);
   const nextProjectRevisionRef = useRef(0);
   const projectShapeSaveQueuesRef = useRef<Record<string, Promise<void>>>({});
 
@@ -513,15 +513,18 @@ export default function Home() {
     openEditor(project.id, { allowMissingFromStorage: true });
   };
 
-  const importStlFileFromDashboard = useCallback(
+  const importFileFromDashboard = useCallback(
     async (file: File) => {
-      if (!importExtensionSupported(file.name)) {
-        setDashboardNotice("Unsupported file type. Use STL.");
+      const isSvg = /\.svg$/i.test(file.name) || file.type === "image/svg+xml";
+      if (!isSvg && !importExtensionSupported(file.name)) {
+        setDashboardNotice("Unsupported file type. Use STL or SVG.");
         return;
       }
 
       try {
-        const shape = importedShapeFromStl(file.name, await file.arrayBuffer());
+        const shape = isSvg
+          ? importedShapeFromSvg(file.name, await file.text())
+          : importedShapeFromStl(file.name, await file.arrayBuffer());
         const project = newProject(projectNameFromFileName(file.name), projects.length, 1);
         const revision = project.revision ?? project.updatedAt;
         await saveProjectShapes(project.id, [shape], revision);
@@ -608,14 +611,14 @@ export default function Home() {
         {JSON.stringify(projectDebugSummary)}
       </pre>
       <input
-        ref={dashboardStlInputRef}
+        ref={dashboardImportInputRef}
         className="hidden-file-input"
         type="file"
-        accept=".stl"
+        accept=".stl,.svg,image/svg+xml"
         onChange={(event) => {
           const file = event.currentTarget.files?.[0];
           if (file) {
-            void importStlFileFromDashboard(file);
+            void importFileFromDashboard(file);
           }
           event.currentTarget.value = "";
         }}
@@ -637,7 +640,7 @@ export default function Home() {
           onDeleteProject={deleteProject}
           onDownloadFolderChange={setDownloadFolder}
           onDownloadModeChange={setDownloadMode}
-          onImportStl={() => dashboardStlInputRef.current?.click()}
+          onImportFile={() => dashboardImportInputRef.current?.click()}
           onChallenges={() => {
             setDashboardSection("challenges");
             setDashboardNotice("");
@@ -688,7 +691,7 @@ function Dashboard({
   onDeleteProject,
   onDownloadFolderChange,
   onDownloadModeChange,
-  onImportStl,
+  onImportFile,
   onChallenges,
   onDashboardHome,
   onOpenProject,
@@ -714,7 +717,7 @@ function Dashboard({
   onDeleteProject: (projectId: string) => void;
   onDownloadFolderChange: (value: string) => void;
   onDownloadModeChange: (value: DownloadMode) => void;
-  onImportStl: () => void;
+  onImportFile: () => void;
   onChallenges: () => void;
   onDashboardHome: () => void;
   onOpenProject: (projectId: string) => void;
@@ -810,11 +813,11 @@ function Dashboard({
                   </span>
                   <span>Create new 3D design</span>
                 </button>
-                <button className="dashboard-action-tile" type="button" onClick={onImportStl}>
+                <button className="dashboard-action-tile" type="button" onClick={onImportFile}>
                   <span className="dashboard-action-icon">
                     <FileUp size={24} strokeWidth={2.4} />
                   </span>
-                  <span>Import STL</span>
+                  <span>Import STL/SVG</span>
                 </button>
                 <button className="dashboard-action-tile" type="button" onClick={onWorkspace}>
                   <span className="dashboard-action-icon">
