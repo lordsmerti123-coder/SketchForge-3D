@@ -32,6 +32,7 @@ playwright-report/
 
 # Local workspace state
 .codex/
+.codex-run/
 .codex-remote-attachments/
 
 # OS/editor noise

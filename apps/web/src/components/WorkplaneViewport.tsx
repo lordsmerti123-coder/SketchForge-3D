@@ -4437,7 +4437,7 @@ function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureRe
     opacity: shape.hole ? (shape.importedMesh ? 0.34 : 0.52) : 1,
     roughness: shape.hole ? 0.88 : 0.57,
     metalness: 0.02,
-    side: shape.importedMesh?.sourceFormat === "json" || mirroredAxisCount(shape) % 2 === 1 ? THREE.DoubleSide : THREE.FrontSide,
+    side: shape.importedMesh?.sourceFormat === "json" || shape.importedMesh?.sourceFormat === "svg" || mirroredAxisCount(shape) % 2 === 1 ? THREE.DoubleSide : THREE.FrontSide,
   });
 
   const width = shapeWidth(shape);
