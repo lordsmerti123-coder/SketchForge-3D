@@ -38,4 +38,4 @@ The app runs at `http://127.0.0.1:3000/` by default.
 
 ## Contribution Licensing
 
-Unless explicitly agreed otherwise in writing, by submitting a contribution you license it under the same terms as SketchForge: the MIT License with the "Commons Clause" License Condition v1.0. See [LICENSE](../LICENSE).
+Unless explicitly agreed otherwise in writing, by submitting a contribution you license it under the MIT License. See [LICENSE](../LICENSE).
