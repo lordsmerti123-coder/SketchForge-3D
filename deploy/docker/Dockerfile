@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-alpine AS builder
+# The exported web app is architecture-independent. Build it once on the
+# native GitHub runner instead of repeating npm/Next.js under arm64 QEMU.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 
 WORKDIR /app
 
