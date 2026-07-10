@@ -15,7 +15,7 @@
   </table>
 
   <p>
-    <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
+    <a href="LICENSE"><img alt="MIT with Commons Clause license" src="https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-2563eb"></a>
     <a href="https://github.com/Formsmith746/SketchForge-3D/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Formsmith746/SketchForge-3D?style=social"></a>
     <a href="https://github.com/sponsors/Formsmith746"><img alt="GitHub Sponsors" src="https://img.shields.io/github/sponsors/Formsmith746?label=sponsor&logo=githubsponsors&color=bf3989"></a>
     <img alt="Local first" src="https://img.shields.io/badge/local--first-no%20account-0ea5e9">
@@ -329,7 +329,9 @@ Please do not open public issues for security-sensitive reports. Read [.github/S
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Future SketchForge releases are licensed under the [MIT License with the "Commons Clause" License Condition v1.0](LICENSE). The Commons Clause restricts selling the software, or a product or service whose value derives substantially from it. This is a source-available license, not an OSI-approved open-source license.
+
+Previously published releases remain under the license that accompanied them.
 
 ## SketchForge MCP Skill
 
