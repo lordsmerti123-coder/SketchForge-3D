@@ -276,40 +276,6 @@ Build a static export:
 npm run export
 ```
 
-## Project Layout
-
-```text
-apps/web/                   Next.js app workspace
-apps/web/src/app/           App routes, dashboard, API routes, styles
-apps/web/src/components/    Editor, viewport, sidebar, icons, controls
-apps/web/src/types/         Shared shape and editor types
-apps/web/src/generated/     Generated Manifold runtime source
-apps/web/src/lib/           Shared utilities
-apps/web/public/assets/     Static app images, icons, logos, shape assets
-scripts/                    Build and local automation helpers
-docs/media/                 README screenshots and demo videos
-docs/mcp/                   MCP client configuration examples
-docs/skills/                Optional AI-agent skill bundles
-deploy/docker/              Docker, Compose, and Nginx deployment files
-.github/                    Issue templates and community files
-```
-
-## Current Status
-
-SketchForge is alpha, but the core editor loop is usable today:
-
-- create and reopen local projects
-- add, move, resize, rotate, mirror, align, duplicate, hide, and delete shapes
-- switch shapes between solid and hole modes
-- group and ungroup geometry
-- apply and remove chamfer/fillet edge treatments
-- import STL files
-- import and export STEP files
-- export STL or OBJ
-- generate project thumbnails
-
-The next big areas are workflow polish, more geometry edge-case testing, stronger automated editor coverage, and better release documentation.
-
 ## Contributing
 
 Contributions are welcome. Good places to help:
