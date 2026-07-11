@@ -1,6 +1,6 @@
 {
   "name": "sketchforge",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "license": "MIT",
   "scripts": {
@@ -9,7 +9,8 @@
     "dev": "next dev apps/web",
     "prebuild": "npm run copy:occt",
     "build": "next build apps/web",
-    "export": "set STATIC_EXPORT=true&& next build apps/web",
+    "export": "set STATIC_EXPORT=true&& next build apps/web && node scripts/verify-static-worker-assets.mjs",
+    "verify:static-worker-assets": "node scripts/verify-static-worker-assets.mjs",
     "start": "next start apps/web",
     "typecheck": "tsc -p apps/web/tsconfig.json --noEmit",
     "test": "vitest run --config tests/vitest.config.ts",

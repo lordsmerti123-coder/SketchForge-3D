@@ -29,8 +29,8 @@ const nextConfig: NextConfig = {
   ...(isStaticExport
     ? {
         output: "export" as const,
+        distDir: ".next-export",
         trailingSlash: true,
-        assetPrefix: "./",
       }
     : {}),
 };

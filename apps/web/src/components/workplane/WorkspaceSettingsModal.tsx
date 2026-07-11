@@ -1,7 +1,7 @@
 "use client";
 
 import { Grid3X3, Palette, Ruler, X } from "lucide-react";
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState } from "react";
 import { normalizeScaleForUnits, scaleOptionsForUnits, WORKSPACE_UNIT_OPTIONS } from "@/lib/measurementUnits";
 import { DEFAULT_WORKPLANE_WORKSPACE } from "@/lib/workplaneSettings";
 import type { GridSize, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
@@ -52,15 +52,27 @@ export function WorkspaceSettingsModal({
 }) {
   const [defaultSaved, setDefaultSaved] = useState(false);
   const [activeSection, setActiveSection] = useState<WorkspaceSettingsSection>("appearance");
+  const [dimensionDrafts, setDimensionDrafts] = useState(() => ({
+    width: workspace.width.toFixed(workspace.accuracy),
+    depth: workspace.depth.toFixed(workspace.accuracy),
+  }));
   const scaleOptions = scaleOptionsForUnits(workspace.units);
   const scaleValue = normalizeScaleForUnits(workspace.units, workspace.scale);
+  useEffect(() => {
+    setDimensionDrafts({
+      width: workspace.width.toFixed(workspace.accuracy),
+      depth: workspace.depth.toFixed(workspace.accuracy),
+    });
+  }, [workspace.accuracy, workspace.depth, workspace.width]);
   const patchWorkspace = (patch: Partial<WorkspaceSettings>) => {
     setDefaultSaved(false);
     const next = { ...workspace, ...patch };
     onWorkspaceChange({ ...next, scale: normalizeScaleForUnits(next.units, next.scale) });
   };
   const setDimension = (key: "width" | "depth", value: string) => {
-    const next = clamp(Number.parseFloat(value) || DEFAULT_WORKPLANE_WORKSPACE[key], MIN_WORKSPACE_SIZE, MAX_WORKSPACE_SIZE);
+    const parsed = Number.parseFloat(value);
+    const next = clamp(Number.isFinite(parsed) ? parsed : workspace[key], MIN_WORKSPACE_SIZE, MAX_WORKSPACE_SIZE);
+    setDimensionDrafts((current) => ({ ...current, [key]: next.toFixed(workspace.accuracy) }));
     patchWorkspace({ [key]: next, sizePreset: "Custom" } as Partial<WorkspaceSettings>);
   };
   const setWorkspaceSizePreset = (sizePreset: string) => {
@@ -112,15 +124,6 @@ export function WorkspaceSettingsModal({
                   <div className="workspace-section-heading">
                     <strong>Appearance</strong>
                     <span>Adjust the canvas and navigation behavior.</span>
-                  </div>
-                  <div className="workspace-row">
-                    <span>Background color</span>
-                    <button
-                      className="workspace-color-button"
-                      style={{ "--workspace-bg": workspace.background } as CSSProperties}
-                      aria-label="Background color"
-                      onClick={() => patchWorkspace({ background: workspace.background === "#f8fbfc" ? "#eaf7fb" : "#f8fbfc" })}
-                    />
                   </div>
                   <WorkspaceToggle label="Show shadows" checked={workspace.showShadows} onChange={(showShadows) => patchWorkspace({ showShadows })} />
                   <WorkspaceToggle label="Show grid" checked={workspace.showGrid} onChange={(showGrid) => patchWorkspace({ showGrid })} />
@@ -199,22 +202,36 @@ export function WorkspaceSettingsModal({
                       <span>Width</span>
                       <input
                         type="number"
-                        value={workspace.width.toFixed(workspace.accuracy)}
+                        value={dimensionDrafts.width}
                         min={MIN_WORKSPACE_SIZE}
                         max={MAX_WORKSPACE_SIZE}
                         step={1}
-                        onChange={(event) => setDimension("width", event.currentTarget.value)}
+                        onChange={(event) => {
+                          const value = event.currentTarget.value;
+                          setDimensionDrafts((current) => ({ ...current, width: value }));
+                        }}
+                        onBlur={(event) => setDimension("width", event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
                       />
                     </label>
                     <label>
                       <span>Length</span>
                       <input
                         type="number"
-                        value={workspace.depth.toFixed(workspace.accuracy)}
+                        value={dimensionDrafts.depth}
                         min={MIN_WORKSPACE_SIZE}
                         max={MAX_WORKSPACE_SIZE}
                         step={1}
-                        onChange={(event) => setDimension("depth", event.currentTarget.value)}
+                        onChange={(event) => {
+                          const value = event.currentTarget.value;
+                          setDimensionDrafts((current) => ({ ...current, depth: value }));
+                        }}
+                        onBlur={(event) => setDimension("depth", event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
                       />
                     </label>
                   </div>

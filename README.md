@@ -19,11 +19,11 @@
     <a href="https://github.com/Formsmith746/SketchForge-3D/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Formsmith746/SketchForge-3D?style=social"></a>
     <a href="https://github.com/sponsors/Formsmith746"><img alt="GitHub Sponsors" src="https://img.shields.io/github/sponsors/Formsmith746?label=sponsor&logo=githubsponsors&color=bf3989"></a>
     <img alt="Local first" src="https://img.shields.io/badge/local--first-no%20account-0ea5e9">
-    <img alt="Version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-2563eb">
+    <img alt="Version 0.6.0" src="https://img.shields.io/badge/version-0.6.0-2563eb">
   </p>
 </div>
 
-![SketchForge editor showing a selected box on the workplane](docs/media/sketchforge-editor-v0.5.png)
+![SketchForge editor showing a selected box on the workplane](docs/media/sketchforge-editor-v0.6.png)
 
 ## Why SketchForge
 

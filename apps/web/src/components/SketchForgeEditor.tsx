@@ -9,7 +9,6 @@ import * as THREE from "three";
 import { TextGeometry } from "three/examples/jsm/geometries/TextGeometry.js";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { FontLoader, type Font, type FontData } from "three/examples/jsm/loaders/FontLoader.js";
-import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
 import droidMonoFontJson from "three/examples/fonts/droid/droid_sans_mono_regular.typeface.json";
 import droidSansBoldFontJson from "three/examples/fonts/droid/droid_sans_bold.typeface.json";
 import droidSerifBoldFontJson from "three/examples/fonts/droid/droid_serif_bold.typeface.json";
@@ -60,13 +59,24 @@ import {
   serializeShapesForSync,
   shapeDepth,
   shapeWidth,
+  withHoleMode,
   workplaneShapesEqual,
 } from "@/lib/workplaneShapes";
 import { bakeCadMetadataForShapeTransform, cadBrepTransformForShape, cadModifierPrimitiveForAnalyticBox, cadModifierPrimitiveForBakedShape } from "@/lib/cadBakeMetadata";
+import { hasOneToOneCadComponentMapping } from "@/lib/cadModifierGroups";
+import {
+  CAD_MODIFIER_REQUEST_TIMEOUT_MS,
+  cadModifierTimeoutMessage,
+  cadModifierWorkerFailureMessage,
+  type CadModifierRequestPhase,
+} from "@/lib/cadModifierRuntime";
+import { cloneWorkplaneShapeSnapshot, restoreShapeBeforeEdgeTreatment } from "@/lib/edgeTreatmentHistory";
+import { snapShapeFootprintToVisibleGrid, visibleGridStep } from "@/lib/gridSnap";
 import { createLocalId } from "@/lib/localIds";
 import { projectExportFileName } from "@/lib/exportNames";
 import { makeShapeFromAsset, sceneShape, toolbarShapeAssets, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
+import { importedShapeFromSvg, invalidSvgMeshReason } from "@/lib/svgImport";
 import { normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
 import {
   SKETCHFORGE_MCP_POLL_MS,
@@ -179,7 +189,6 @@ const COPLANAR_BOOLEAN_RESCUE_DEGREES = 0.02;
 const NORMAL_SELECTION_CAD_EDGE_MIN_ANGLE = 60;
 const MIN_EDGE_MODIFIER_AMOUNT = 0.001;
 const SEPARATE_PARTS_VERTEX_TOLERANCE = 0.0005;
-const svgLoader = new SVGLoader();
 const booleanFontLoader = new FontLoader();
 const booleanTextFonts: Record<string, Font> = {
   Multilanguage: booleanFontLoader.parse(helvetikerBoldFontJson as FontData),
@@ -1074,16 +1083,6 @@ function makeBlockPerfScene(count = 500): WorkplaneShape[] {
   });
 }
 
-function withHoleMode(shape: WorkplaneShape, hole: boolean, parentColor?: string): WorkplaneShape {
-  const color = hole ? "#b8c2cc" : (parentColor ?? fallbackSolidColor(shape));
-  return {
-    ...shape,
-    hole,
-    color,
-    groupedShapes: shape.groupedShapes?.map((child) => withHoleMode(child, hole)),
-  };
-}
-
 function sanitizeName(name: string) {
   return name.replace(/[^a-z0-9_-]+/gi, "_") || "shape";
 }
@@ -1275,10 +1274,6 @@ function cadModifierComponentPreviews(sourceParts: WorkplaneShape[], components:
   return previews;
 }
 
-function cloneWorkplaneShapeSnapshot(shape: WorkplaneShape): WorkplaneShape {
-  return JSON.parse(JSON.stringify(canonicalizeShape(shape))) as WorkplaneShape;
-}
-
 function edgeTreatmentLabel(feature: NonNullable<WorkplaneShape["edgeTreatments"]>[number]) {
   const size = `${Number(feature.amount.toFixed(2))} mm`;
   return `${feature.kind === "fillet" ? "fillet" : "chamfer"} (${size}, ${feature.edgeCount} edge${feature.edgeCount === 1 ? "" : "s"})`;
@@ -1357,7 +1352,10 @@ function groupedShapeWithComponentEdgeTreatment(
   feature: NonNullable<WorkplaneShape["edgeTreatments"]>[number],
   createdAt: number,
 ) {
-  if (!base.groupedShapes?.length || sourceParts.length < 2 || session.componentPreviews.length === 0) {
+  if (
+    !base.groupedShapes?.length ||
+    !hasOneToOneCadComponentMapping(sourceParts.length, session.componentPreviews.map((component) => component.owner))
+  ) {
     return null;
   }
 
@@ -1373,6 +1371,9 @@ function groupedShapeWithComponentEdgeTreatment(
   }
 
   const ownerToSourceIndex = matchCadComponentsToSources(sourceParts, session.componentPreviews);
+  if (ownerToSourceIndex.size !== sourceParts.length) {
+    return null;
+  }
   const componentByOwner = new Map(session.componentPreviews.map((component) => [component.owner, component]));
   const updatedSources = [...sourceParts];
   let changed = false;
@@ -1443,29 +1444,7 @@ function edgeTreatmentHistoryOptions(shape: WorkplaneShape, path: number[] = [],
 }
 
 function restoreOwnLastEdgeTreatment(shape: WorkplaneShape, entry: NonNullable<WorkplaneShape["edgeTreatmentHistory"]>[number]) {
-  const before = cloneWorkplaneShapeSnapshot(entry.before);
-  return canonicalizeShape({
-    ...before,
-    id: shape.id,
-    name: shape.name,
-    color: shape.color,
-    hole: shape.hole || undefined,
-    x: shape.x,
-    z: shape.z,
-    elevation: shape.elevation,
-    width: shapeWidth(shape),
-    depth: shapeDepth(shape),
-    height: shape.height,
-    size: shape.size,
-    rotation: shape.rotation,
-    rotationX: shape.rotationX,
-    rotationZ: shape.rotationZ,
-    mirrorX: shape.mirrorX,
-    mirrorY: shape.mirrorY,
-    mirrorZ: shape.mirrorZ,
-    locked: shape.locked,
-    hidden: shape.hidden,
-  });
+  return restoreShapeBeforeEdgeTreatment(shape, entry);
 }
 
 async function restoreEdgeTreatmentInShape(shape: WorkplaneShape, path: number[], entryId: string): Promise<{ shape: WorkplaneShape; label: string } | null> {
@@ -2096,98 +2075,6 @@ function bakeShapeTransformIntoMesh(shape: WorkplaneShape): WorkplaneShape {
     groupedBaseWidth: undefined,
     groupedBaseDepth: undefined,
     groupedBaseHeight: undefined,
-  };
-}
-
-function importedShapeFromSvg(fileName: string, source: string): WorkplaneShape {
-  const parsed = svgLoader.parse(source);
-  const rawPositions: number[] = [];
-  const rawNormals: number[] = [];
-
-  parsed.paths.forEach((path) => {
-    SVGLoader.createShapes(path).forEach((svgShape) => {
-      const rawGeometry = new THREE.ExtrudeGeometry(svgShape, {
-        depth: 4,
-        bevelEnabled: false,
-        curveSegments: 16,
-        steps: 1,
-      });
-      rawGeometry.rotateX(-Math.PI / 2);
-      const geometry = rawGeometry.index ? rawGeometry.toNonIndexed() : rawGeometry;
-      geometry.computeVertexNormals();
-      const position = geometry.getAttribute("position");
-      const normal = geometry.getAttribute("normal");
-      for (let i = 0; i < position.count; i += 1) {
-        rawPositions.push(position.getX(i), position.getY(i), position.getZ(i));
-        if (normal) {
-          rawNormals.push(normal.getX(i), normal.getY(i), normal.getZ(i));
-        }
-      }
-      if (geometry !== rawGeometry) geometry.dispose();
-      rawGeometry.dispose();
-    });
-  });
-
-  if (rawPositions.length < 9) {
-    throw new Error("SVG has no readable filled paths");
-  }
-
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let minZ = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  let maxZ = Number.NEGATIVE_INFINITY;
-
-  for (let i = 0; i < rawPositions.length; i += 3) {
-    minX = Math.min(minX, rawPositions[i]);
-    minY = Math.min(minY, rawPositions[i + 1]);
-    minZ = Math.min(minZ, rawPositions[i + 2]);
-    maxX = Math.max(maxX, rawPositions[i]);
-    maxY = Math.max(maxY, rawPositions[i + 1]);
-    maxZ = Math.max(maxZ, rawPositions[i + 2]);
-  }
-
-  const centerX = (minX + maxX) / 2;
-  const centerZ = (minZ + maxZ) / 2;
-  const width = Math.max(1, maxX - minX);
-  const height = Math.max(1, maxY - minY);
-  const depth = Math.max(1, maxZ - minZ);
-  const positions: number[] = [];
-  const normals: number[] = [];
-
-  for (let i = 0; i < rawPositions.length; i += 3) {
-    positions.push(rawPositions[i] - centerX, rawPositions[i + 1] - minY, rawPositions[i + 2] - centerZ);
-    if (rawNormals.length === rawPositions.length) {
-      normals.push(rawNormals[i], rawNormals[i + 1], rawNormals[i + 2]);
-    }
-  }
-
-  return {
-    id: createLocalId("uploaded-svg"),
-    name: fileName.replace(/\.[^.]+$/, "") || "Imported SVG",
-    kind: "mesh",
-    color: "#0098c7",
-    x: 10,
-    z: -10,
-    size: Math.max(width, depth),
-    width,
-    depth,
-    height,
-    rotation: 0,
-    rotationX: 0,
-    rotationZ: 0,
-    importedMesh: {
-      positions,
-      normals: normals.length ? normals : undefined,
-      baseWidth: width,
-      baseDepth: depth,
-      baseHeight: height,
-      triangleCount: Math.floor(positions.length / 9),
-      sourceFormat: "svg",
-    },
-    locked: false,
-    hidden: false,
   };
 }
 
@@ -5193,14 +5080,86 @@ export function SketchForgeEditor({
   const cadModifierBaseShapeRef = useRef<WorkplaneShape | null>(null);
   const cadModifierBaseFingerprintRef = useRef("");
   const cadModifierSourcePartsRef = useRef<WorkplaneShape[]>([]);
+  const cadModifierWatchdogRef = useRef<{ requestId: number; phase: CadModifierRequestPhase; timer: number } | null>(null);
+  const cadModifierWorkerRestartRef = useRef<() => Worker | null>(() => null);
   const lastMcpErrorRef = useRef<string | null>(null);
   const executeMcpCommandRef = useRef<((command: SketchForgeMcpCommand) => Promise<unknown>) | null>(null);
 
+  const clearCadModifierWatchdog = useCallback((requestId?: number) => {
+    const active = cadModifierWatchdogRef.current;
+    if (!active || (requestId !== undefined && active.requestId !== requestId)) return;
+    window.clearTimeout(active.timer);
+    cadModifierWatchdogRef.current = null;
+  }, []);
+
+  const armCadModifierWatchdog = useCallback((requestId: number, phase: CadModifierRequestPhase) => {
+    clearCadModifierWatchdog();
+    const timer = window.setTimeout(() => {
+      const active = cadModifierWatchdogRef.current;
+      if (!active || active.requestId !== requestId) return;
+      cadModifierWatchdogRef.current = null;
+      cadModifierWorkerRef.current?.terminate();
+      cadModifierWorkerRef.current = null;
+      cadModifierWorkerRestartRef.current();
+      const message = cadModifierTimeoutMessage(phase);
+      setEdgeModifier((current) => current ? {
+        ...current,
+        busy: false,
+        prepared: false,
+        preview: null,
+        error: message,
+      } : current);
+      setNotice(message);
+    }, CAD_MODIFIER_REQUEST_TIMEOUT_MS);
+    cadModifierWatchdogRef.current = { requestId, phase, timer };
+  }, [clearCadModifierWatchdog]);
+
   useEffect(() => {
-    const worker = new Worker(new URL("../workers/cadModifier.worker.ts", import.meta.url), { type: "module" });
-    cadModifierWorkerRef.current = worker;
-    worker.onmessage = (event: MessageEvent<CadModifierWorkerResponse>) => {
+    let disposed = false;
+    const rejectPendingRequests = (message: string) => {
+      cadModifierPendingRef.current.forEach((pending) => {
+        window.clearTimeout(pending.timer);
+        pending.reject(new Error(message));
+      });
+      cadModifierPendingRef.current.clear();
+    };
+    const reportWorkerFailure = (worker: Worker | null) => {
+      if (worker && cadModifierWorkerRef.current !== worker) return;
+      clearCadModifierWatchdog();
+      worker?.terminate();
+      cadModifierWorkerRef.current = null;
+      rejectPendingRequests("The CAD worker could not start");
+      const requestId = cadModifierRequestRef.current + 1;
+      cadModifierRequestRef.current = requestId;
+      cadModifierPrepareRef.current = requestId;
+      cadModifierLatestPreviewRef.current = requestId;
+      if (cadModifierBaseShapeRef.current) {
+        const message = cadModifierWorkerFailureMessage();
+        setEdgeModifier((current) => current ? { ...current, busy: false, prepared: false, preview: null, error: message } : current);
+        setNotice(message);
+      }
+    };
+    const createWorker = () => {
+      if (disposed) return null;
+      cadModifierWorkerRef.current?.terminate();
+      try {
+        const worker = new Worker(new URL("../workers/cadModifier.worker.ts", import.meta.url), { type: "module" });
+        cadModifierWorkerRef.current = worker;
+        worker.onmessage = handleWorkerMessage;
+        worker.onerror = (event) => {
+          event.preventDefault();
+          reportWorkerFailure(worker);
+        };
+        worker.onmessageerror = () => reportWorkerFailure(worker);
+        return worker;
+      } catch {
+        reportWorkerFailure(null);
+        return null;
+      }
+    };
+    function handleWorkerMessage(event: MessageEvent<CadModifierWorkerResponse>) {
       const message = event.data;
+      clearCadModifierWatchdog(message.requestId);
       const pending = cadModifierPendingRef.current.get(message.requestId);
       if (pending) {
         window.clearTimeout(pending.timer);
@@ -5263,24 +5222,23 @@ export function SketchForgeEditor({
         setEdgeModifier((current) => current ? { ...current, busy: false, preview: null, error: message.message } : current);
         setNotice("Edge treatment needs adjustment");
       }
-    };
-    worker.onerror = () => {
-      setEdgeModifier((current) => current ? { ...current, busy: false, preview: null, error: "The CAD worker could not start" } : current);
-    };
+    }
+    cadModifierWorkerRestartRef.current = createWorker;
+    createWorker();
     return () => {
-      cadModifierPendingRef.current.forEach((pending) => {
-        window.clearTimeout(pending.timer);
-        pending.reject(new Error("The CAD worker was closed"));
-      });
-      cadModifierPendingRef.current.clear();
-      worker.terminate();
+      disposed = true;
+      clearCadModifierWatchdog();
+      cadModifierWorkerRestartRef.current = () => null;
+      rejectPendingRequests("The CAD worker was closed");
+      cadModifierWorkerRef.current?.terminate();
       cadModifierWorkerRef.current = null;
     };
-  }, []);
+  }, [clearCadModifierWatchdog]);
 
   const invalidateCadModifierSession = useCallback(() => {
     const wasActive = cadModifierBaseShapeRef.current !== null;
     if (!wasActive) return false;
+    clearCadModifierWatchdog();
     const requestId = cadModifierRequestRef.current + 1;
     cadModifierRequestRef.current = requestId;
     cadModifierLatestPreviewRef.current = requestId;
@@ -5291,7 +5249,7 @@ export function SketchForgeEditor({
     cadModifierSourcePartsRef.current = [];
     setEdgeModifier(null);
     return true;
-  }, []);
+  }, [clearCadModifierWatchdog]);
 
   useEffect(() => {
     const warmBooleanRuntime = () => {
@@ -6344,14 +6302,22 @@ export function SketchForgeEditor({
   }, []);
 
   const postCadModifierRequest = useCallback((request: CadModifierWorkerPayload, transfer: Transferable[] = []) => {
+    const worker = cadModifierWorkerRef.current ?? cadModifierWorkerRestartRef.current();
+    if (!worker) return null;
     const requestId = cadModifierRequestRef.current + 1;
     cadModifierRequestRef.current = requestId;
-    cadModifierWorkerRef.current?.postMessage({ ...request, requestId } as CadModifierWorkerRequest, transfer);
+    try {
+      worker.postMessage({ ...request, requestId } as CadModifierWorkerRequest, transfer);
+    } catch {
+      worker.terminate();
+      if (cadModifierWorkerRef.current === worker) cadModifierWorkerRef.current = null;
+      return null;
+    }
     return requestId;
   }, []);
 
   const postCadModifierRequestAsync = useCallback((request: CadModifierWorkerPayload, transfer: Transferable[] = [], timeoutMs = 20000) => {
-    const worker = cadModifierWorkerRef.current;
+    const worker = cadModifierWorkerRef.current ?? cadModifierWorkerRestartRef.current();
     if (!worker) {
       return Promise.reject(new Error("The CAD worker is not ready"));
     }
@@ -6363,7 +6329,13 @@ export function SketchForgeEditor({
         reject(new Error("Timed out waiting for the CAD worker"));
       }, timeoutMs);
       cadModifierPendingRef.current.set(requestId, { resolve, reject, timer });
-      worker.postMessage({ ...request, requestId } as CadModifierWorkerRequest, transfer);
+      try {
+        worker.postMessage({ ...request, requestId } as CadModifierWorkerRequest, transfer);
+      } catch (error) {
+        window.clearTimeout(timer);
+        cadModifierPendingRef.current.delete(requestId);
+        reject(error instanceof Error ? error : new Error("The CAD worker rejected the request"));
+      }
     });
   }, []);
 
@@ -6430,13 +6402,21 @@ export function SketchForgeEditor({
       if (part.primitive) return { primitive: part.primitive, hole: Boolean(part.shape.hole) };
       return { ...meshDataToCadTransfer(part.mesh as MeshData), hole: Boolean(part.shape.hole) };
     });
-    cadModifierPrepareRef.current = postCadModifierRequest({
+    const prepareRequestId = postCadModifierRequest({
       type: "prepare",
       parts,
       sharpAngle: 25,
       suppressTreatmentDetailEdges: appliedEdgeTreatmentCount > 0,
     }, parts.flatMap((part) => part.positions && part.indices ? [part.positions.buffer, part.indices.buffer] : []));
-  }, [postCadModifierRequest, selectedShape, selectedShapes.length]);
+    if (prepareRequestId === null) {
+      const message = cadModifierWorkerFailureMessage();
+      setEdgeModifier((current) => current ? { ...current, busy: false, prepared: false, error: message } : current);
+      setNotice(message);
+      return;
+    }
+    cadModifierPrepareRef.current = prepareRequestId;
+    armCadModifierWatchdog(prepareRequestId, "prepare");
+  }, [armCadModifierWatchdog, postCadModifierRequest, selectedShape, selectedShapes.length]);
 
   const prepareCadModifierForMcp = useCallback(async (shape: WorkplaneShape, sharpAngle: number) => {
     if (shape.locked || shape.hole) {
@@ -6632,8 +6612,6 @@ export function SketchForgeEditor({
 
   useEffect(() => {
     if (!edgeModifier?.prepared || edgeModifier.selectedEdgeIds.length === 0) return;
-    const worker = cadModifierWorkerRef.current;
-    if (!worker) return;
     const timer = window.setTimeout(() => {
       const requestId = postCadModifierRequest({
         type: "preview",
@@ -6643,11 +6621,18 @@ export function SketchForgeEditor({
         quality: edgeModifier.quality,
         chamferAngle: edgeModifier.chamferAngle,
       });
+      if (requestId === null) {
+        const message = cadModifierWorkerFailureMessage();
+        setEdgeModifier((current) => current ? { ...current, busy: false, prepared: false, preview: null, error: message } : current);
+        setNotice(message);
+        return;
+      }
       cadModifierLatestPreviewRef.current = requestId;
+      armCadModifierWatchdog(requestId, "preview");
       setEdgeModifier((current) => current ? { ...current, busy: true, error: null } : current);
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [edgeModifier?.amount, edgeModifier?.chamferAngle, edgeModifier?.kind, edgeModifier?.prepared, edgeModifier?.quality, edgeModifier?.selectedEdgeIds, postCadModifierRequest]);
+  }, [armCadModifierWatchdog, edgeModifier?.amount, edgeModifier?.chamferAngle, edgeModifier?.kind, edgeModifier?.prepared, edgeModifier?.quality, edgeModifier?.selectedEdgeIds, postCadModifierRequest]);
 
   const snapSelected = useCallback(() => {
     if (!hasSelection) {
@@ -6655,27 +6640,17 @@ export function SketchForgeEditor({
       return;
     }
     const selected = new Set(selectedIds);
-    const grid = 1;
-    const snapValue = (value: number) => Math.round(value / grid) * grid;
+    const grid = visibleGridStep(workspaceSettings);
     commitShapes(
       shapes.map((shape) =>
         selected.has(shape.id) && !shape.locked
-          ? {
-              ...shape,
-              x: snapValue(shape.x),
-              z: snapValue(shape.z),
-              elevation: snapValue(shape.elevation ?? 0),
-              width: Math.max(grid, snapValue(shape.width)),
-              depth: Math.max(grid, snapValue(shape.depth)),
-              height: Math.max(grid, snapValue(shape.height)),
-              size: Math.max(grid, snapValue(shape.size)),
-            }
+          ? snapShapeFootprintToVisibleGrid(shape, meshAabb(shape), workspaceSettings)
           : shape,
       ),
       selectedIds,
-      `Snapped ${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"} to 1 mm grid`,
+      `Snapped ${selectedShapes.length} shape${selectedShapes.length === 1 ? "" : "s"} to ${grid} mm visible grid`,
     );
-  }, [commitShapes, hasSelection, selectedIds, selectedShapes.length, shapes]);
+  }, [commitShapes, hasSelection, selectedIds, selectedShapes.length, shapes, workspaceSettings]);
 
   const toggleHidden = useCallback(() => {
     if (!hasSelection) {
@@ -7460,6 +7435,11 @@ export function SketchForgeEditor({
       setNotice(hasSelection ? "Select at least one solid shape before exporting" : "Add a solid shape before exporting");
       return;
     }
+    const invalidSvg = exportable.map(invalidSvgMeshReason).find((reason): reason is string => Boolean(reason));
+    if (invalidSvg) {
+      setNotice(`${invalidSvg}. Re-import the source SVG after fixing its contours`);
+      return;
+    }
     const meshes = exportable.map(meshForShape);
     const selectedNotice = `Exported ${exportable.length} selected shape${exportable.length === 1 ? "" : "s"}`;
     const finishNotice = (label: string, result: DownloadResult) => {
@@ -8002,12 +7982,13 @@ export function SketchForgeEditor({
           selectedCount={edgeModifier.selectedEdgeIds.length}
           availableCount={modifierAvailableEdgeIds.length}
           busy={edgeModifier.busy}
+          prepared={edgeModifier.prepared}
           error={edgeModifier.error}
-          onAmountChange={(value) => setEdgeModifier((current) => current ? { ...current, amount: Math.max(MIN_EDGE_MODIFIER_AMOUNT, Math.min(edgeModifierMaxAmount, value)), preview: null, busy: true, error: null } : current)}
-          onChamferAngleChange={(value) => setEdgeModifier((current) => current ? { ...current, chamferAngle: Math.max(5, Math.min(85, value)), preview: null, busy: true, error: null } : current)}
-          onQualityChange={(quality) => setEdgeModifier((current) => current ? { ...current, quality, preview: null, busy: true, error: null } : current)}
+          onAmountChange={(value) => setEdgeModifier((current) => current?.prepared ? { ...current, amount: Math.max(MIN_EDGE_MODIFIER_AMOUNT, Math.min(edgeModifierMaxAmount, value)), preview: null, busy: true, error: null } : current)}
+          onChamferAngleChange={(value) => setEdgeModifier((current) => current?.prepared ? { ...current, chamferAngle: Math.max(5, Math.min(85, value)), preview: null, busy: true, error: null } : current)}
+          onQualityChange={(quality) => setEdgeModifier((current) => current?.prepared ? { ...current, quality, preview: null, busy: true, error: null } : current)}
           onSharpAngleChange={(sharpAngle) => setEdgeModifier((current) => {
-            if (!current) return current;
+            if (!current?.prepared) return current;
             const nextAngle = Math.max(1, Math.min(120, sharpAngle));
             const availableIds = new Set(current.edges
               .filter((edge) => selectableCadModifierEdge(edge, nextAngle))
@@ -8022,10 +8003,10 @@ export function SketchForgeEditor({
               error: availableIds.size === 0 ? "No sharp edges match this threshold" : selectedEdgeIds.length ? null : "Select at least one highlighted edge",
             };
           })}
-          onTangentChainChange={(tangentChain) => setEdgeModifier((current) => current ? { ...current, tangentChain } : current)}
-          onPreserveEdgeSizeChange={(preserveEdgeSize) => setEdgeModifier((current) => current ? { ...current, preserveEdgeSize } : current)}
-          onSelectAll={() => setEdgeModifier((current) => current ? { ...current, selectedEdgeIds: modifierAvailableEdgeIds, preview: null, busy: modifierAvailableEdgeIds.length > 0, error: modifierAvailableEdgeIds.length ? null : current.error } : current)}
-          onClear={() => setEdgeModifier((current) => current ? { ...current, selectedEdgeIds: [], preview: null, busy: false, error: "Select at least one highlighted edge" } : current)}
+          onTangentChainChange={(tangentChain) => setEdgeModifier((current) => current?.prepared ? { ...current, tangentChain } : current)}
+          onPreserveEdgeSizeChange={(preserveEdgeSize) => setEdgeModifier((current) => current?.prepared ? { ...current, preserveEdgeSize } : current)}
+          onSelectAll={() => setEdgeModifier((current) => current?.prepared ? { ...current, selectedEdgeIds: modifierAvailableEdgeIds, preview: null, busy: modifierAvailableEdgeIds.length > 0, error: modifierAvailableEdgeIds.length ? null : current.error } : current)}
+          onClear={() => setEdgeModifier((current) => current?.prepared ? { ...current, selectedEdgeIds: [], preview: null, busy: false, error: "Select at least one highlighted edge" } : current)}
           onRemoveFeature={removeEdgeTreatment}
           onApply={applyEdgeModifier}
           onCancel={cancelEdgeModifier}
@@ -8390,7 +8371,7 @@ function SecondaryToolbar({
         </div>
       </div>
       <div className="toolbar-section toolbar-actions-section">
-        <div className="toolbar-section-label">Output</div>
+        <div className="toolbar-section-label">Manage</div>
         <div className="action-buttons">
           <button className="action-icon-button" aria-label="Import" title="Import" onClick={() => onTopPanel("import")}>
             <ToolbarImportIcon />

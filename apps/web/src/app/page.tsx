@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SketchForgeEditor, importedShapeFromStl, importedShapeFromSvg } from "@/components/SketchForgeEditor";
 import { createLocalId } from "@/lib/localIds";
 import { importExtensionSupported } from "@/lib/stlImport";
-import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
+import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, workplaneSettingsFingerprint } from "@/lib/workplaneSettings";
 import type { GridSize, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 type AppView = "dashboard" | "editor";
@@ -260,6 +260,13 @@ export default function Home() {
   const projectShapeSaveQueuesRef = useRef<Record<string, Promise<void>>>({});
 
   useEffect(() => {
+    document.documentElement.removeAttribute("data-theme");
+    document.documentElement.style.colorScheme = "light";
+    try {
+      window.localStorage.removeItem("sketchForge.theme");
+    } catch {
+      // Light mode still applies when browser storage is unavailable.
+    }
     const { projects: storedProjects, legacyShapes } = readStoredProjects();
     setProjects(storedProjects);
     if (Object.keys(legacyShapes).length > 0) {
@@ -486,18 +493,26 @@ export default function Home() {
     const version = Date.now();
     const workspace = normalizeWorkspaceSettings(snapshot.workspace);
     const snapGrid = normalizeSnapGrid(snapshot.snap);
-    setProjects((current) =>
-      current.map((project) =>
-        project.id === snapshot.projectId
-          ? {
-              ...project,
-              workspace,
-              snapGrid,
-              updatedAt: version,
-            }
-          : project,
-      ),
-    );
+    const nextFingerprint = workplaneSettingsFingerprint(workspace, snapGrid);
+    setProjects((current) => {
+      let changed = false;
+      const next = current.map((project) => {
+        if (project.id !== snapshot.projectId) return project;
+        const currentFingerprint = workplaneSettingsFingerprint(
+          normalizeWorkspaceSettings(project.workspace),
+          normalizeSnapGrid(project.snapGrid),
+        );
+        if (currentFingerprint === nextFingerprint) return project;
+        changed = true;
+        return {
+          ...project,
+          workspace,
+          snapGrid,
+          updatedAt: version,
+        };
+      });
+      return changed ? next : current;
+    });
   }, []);
 
   const createAndOpenProject = (name?: string) => {

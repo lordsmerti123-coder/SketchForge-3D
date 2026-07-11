@@ -13,12 +13,12 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build
+RUN npm run build && npm run verify:static-worker-assets
 
 FROM nginx:stable-alpine AS runner
 
 COPY deploy/docker/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=builder /app/apps/web/out /usr/share/nginx/html
+COPY --from=builder /app/apps/web/.next-export /usr/share/nginx/html
 
 EXPOSE 80
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { Home, Minus, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, Home, Minus, Plus, Ruler, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type DragEvent, type MutableRefObject, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import * as THREE from "three";
 import { Brush, Evaluator, HOLLOW_INTERSECTION } from "three-bvh-csg";
@@ -18,6 +18,7 @@ import { AlignOverlay, MirrorOverlay, type AlignOverlayState, type MirrorOverlay
 import { ShapeInspector, SnapGridControl, type ShapeInspectorUpdateOptions } from "@/components/workplane/ShapeInspector";
 import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettingsModal";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, workplaneSettingsFingerprint } from "@/lib/workplaneSettings";
+import { interiorWorkplaneGridCoordinates, workplaneGridPalette, WORKPLANE_LINE_ELEVATION } from "@/lib/workplaneGrid";
 import { cleanNearZero, cleanRotationDegrees, fallbackSolidColor, mirroredAxisCount, mirrorSign, preservesEdgeTreatmentSize, proportionalResizeScale, resizedImportedCoordinates, resizedImportedMeshPositions, resizedShapeSize, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import type { SketchForgeMcpViewFace } from "@/lib/sketchforgeMcpProtocol";
 import {
@@ -278,18 +279,6 @@ type RulerCandidate = {
   z: number;
   pointId?: string;
 };
-
-function RulerGlyph() {
-  return (
-    <svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
-      <path d="M5 9.5 24.5 5 27 16 7.5 20.5 5 9.5Z" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinejoin="round" />
-      <path d="m10 8.5 1 4.2m4-5.3.7 2.9m4.3-4 .9 4.2m-12.3 7 1.7-3.8m4.1 2.8 1.2-2.7m4 1.6 1.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <circle cx="7.5" cy="24.5" r="2" fill="currentColor" />
-      <circle cx="24.5" cy="24.5" r="2" fill="currentColor" />
-      <path d="M9.5 24.5h13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 type RotationHandleSide = "near" | "right" | "far" | "left";
 type RotationHandleSides = Record<RotationAxis, RotationHandleSide>;
@@ -639,20 +628,22 @@ function RulerOverlay({
   overlay,
   startPointId,
   active,
+  deleteMode,
   onPointPointerDown,
   onSegmentPointerDown,
 }: {
   overlay: RulerOverlayState;
   startPointId: string | null;
   active: boolean;
+  deleteMode: boolean;
   onPointPointerDown: (event: ReactPointerEvent<SVGCircleElement>, pointId: string) => void;
   onSegmentPointerDown: (event: ReactPointerEvent<SVGLineElement>, segmentId: string) => void;
 }) {
   return (
-    <div className={`ruler-overlay ${active ? "active" : ""}`} aria-label="Ruler measurements">
+    <div className={`ruler-overlay ${active ? "active" : ""} ${deleteMode ? "delete-mode" : ""}`} aria-label="Ruler measurements">
       <svg className="ruler-guides" width="100%" height="100%" aria-hidden="true">
         {overlay.segments.map((segment) => (
-          <g key={segment.id}>
+          <g key={segment.id} className="ruler-segment-group">
             <line className="ruler-segment" x1={segment.x1} y1={segment.y1} x2={segment.x2} y2={segment.y2} />
             <line
               className="ruler-segment-hit"
@@ -1191,6 +1182,9 @@ export function WorkplaneViewport({
   const [editingDimension, setEditingDimension] = useState<EditingDimension>(null);
   const [editingRotation, setEditingRotation] = useState<EditingRotation>(null);
   const [rulerMode, setRulerMode] = useState(false);
+  const [rulerDeleteMode, setRulerDeleteMode] = useState(false);
+  const [rulerToolsOpen, setRulerToolsOpen] = useState(false);
+  const [cameraControlsCollapsed, setCameraControlsCollapsed] = useState(false);
   const [rulerModel, setRulerModel] = useState<RulerModel>({ points: [], segments: [], startPointId: null, hover: null });
   const [rulerOverlay, setRulerOverlay] = useState<RulerOverlayState | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -1213,6 +1207,7 @@ export function WorkplaneViewport({
   const alignOverlayRef = useRef<AlignOverlayState | null>(null);
   const mirrorOverlayRef = useRef<MirrorOverlayState | null>(null);
   const rulerModeRef = useRef(false);
+  const rulerDeleteModeRef = useRef(false);
   const rulerModelRef = useRef(rulerModel);
   const rulerOverlayRef = useRef<RulerOverlayState | null>(null);
   const rulerIdRef = useRef(0);
@@ -1273,8 +1268,17 @@ export function WorkplaneViewport({
     }
     const shouldUseSavedDefault = nextKey === "local-workplane" || (initialSnap === undefined && initialWorkspace === undefined);
     const savedDefault = shouldUseSavedDefault ? readSavedWorkspaceDefault(nextKey) : null;
-    setSnap(savedDefault?.snap ?? normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID));
-    setWorkspace(savedDefault?.workspace ?? normalizeWorkspaceSettings(initialWorkspace));
+    const nextSnap = savedDefault?.snap ?? normalizeSnapGrid(initialSnap, DEFAULT_SNAP_GRID);
+    const nextWorkspace = savedDefault?.workspace ?? normalizeWorkspaceSettings(initialWorkspace);
+    const nextFingerprint = workplaneSettingsFingerprint(nextWorkspace, nextSnap);
+    // Prop hydration must not echo back to the parent. Parent persistence creates
+    // new object references even when the values are unchanged, which previously
+    // caused this effect and its callback effect to update each other indefinitely.
+    lastWorkspaceSettingsSyncRef.current = nextFingerprint;
+    setSnap((current) => (current === nextSnap ? current : nextSnap));
+    setWorkspace((current) => (
+      workplaneSettingsFingerprint(current, nextSnap) === nextFingerprint ? current : nextWorkspace
+    ));
   }, [initialSnap, initialWorkspace, workspaceSettingsKey]);
 
   useEffect(() => {
@@ -1425,6 +1429,10 @@ export function WorkplaneViewport({
   }, [rulerMode]);
 
   useEffect(() => {
+    rulerDeleteModeRef.current = rulerDeleteMode;
+  }, [rulerDeleteMode]);
+
+  useEffect(() => {
     rulerModelRef.current = rulerModel;
     if (threeRef.current) {
       syncRulerOverlay(threeRef.current, rulerModel, rulerOverlayRef, setRulerOverlay, workspaceRef.current.accuracy);
@@ -1470,6 +1478,7 @@ export function WorkplaneViewport({
 
     const state = createThreeScene(host);
     threeRef.current = state;
+    rebuildWorkplane(state, workspaceRef.current);
     window.sketchforgeCaptureCanvas = () => {
       state.camera.updateMatrixWorld();
       state.renderer.render(state.scene, state.camera);
@@ -1736,8 +1745,6 @@ export function WorkplaneViewport({
         ? current.segments
         : [...current.segments, { id: `ruler-segment-${++rulerIdRef.current}`, startId: current.startPointId, endId: point.id }];
       storeRulerModel({ points, segments, startPointId: null, hover: null });
-      rulerModeRef.current = false;
-      setRulerMode(false);
     },
     [storeRulerModel],
   );
@@ -1772,14 +1779,16 @@ export function WorkplaneViewport({
   const removeRulerPoint = useCallback(
     (pointId: string) => {
       const current = rulerModelRef.current;
-      const connected = current.segments.filter((segment) => segment.startId === pointId || segment.endId === pointId);
-      if (connected.length > 0) {
-        removeRulerSegment(connected[connected.length - 1].id);
-        return;
-      }
-      storeRulerModel({ ...current, points: current.points.filter((point) => point.id !== pointId), startPointId: current.startPointId === pointId ? null : current.startPointId });
+      const segments = current.segments.filter((segment) => segment.startId !== pointId && segment.endId !== pointId);
+      const points = current.points.filter((point) => point.id !== pointId);
+      storeRulerModel({
+        ...current,
+        points,
+        segments,
+        startPointId: current.startPointId === pointId ? null : current.startPointId,
+      });
     },
-    [removeRulerSegment, storeRulerModel],
+    [storeRulerModel],
   );
 
   const setMarqueeFromState = useCallback((marquee: MarqueeState | null) => {
@@ -2332,6 +2341,11 @@ export function WorkplaneViewport({
         return;
       }
 
+      if (rulerDeleteModeRef.current) {
+        event.preventDefault();
+        return;
+      }
+
       if (rulerModeRef.current) {
         event.preventDefault();
         const candidate = resolveRulerCandidate(event.clientX, event.clientY);
@@ -2804,27 +2818,54 @@ export function WorkplaneViewport({
     state.needsRender = true;
   }, []);
 
-  const toggleRulerMode = useCallback(() => {
-    const next = !rulerModeRef.current;
-    rulerModeRef.current = next;
-    setRulerMode(next);
-    const current = rulerModelRef.current;
-    storeRulerModel({ ...current, startPointId: null, hover: null });
+  const toggleRulerTools = useCallback(() => {
+    const next = !rulerToolsOpen;
+    setRulerToolsOpen(next);
+    setRulerActive(false);
+    rulerDeleteModeRef.current = false;
+    setRulerDeleteMode(false);
     if (next) {
       onWorkplaneModeChange(false);
       onSelectShape(null);
     }
-  }, [onSelectShape, onWorkplaneModeChange, storeRulerModel]);
+  }, [onSelectShape, onWorkplaneModeChange, rulerToolsOpen, setRulerActive]);
+
+  const activateRulerAdd = useCallback(() => {
+    rulerDeleteModeRef.current = false;
+    setRulerDeleteMode(false);
+    setRulerActive(true);
+    onWorkplaneModeChange(false);
+    onSelectShape(null);
+  }, [onSelectShape, onWorkplaneModeChange, setRulerActive]);
+
+  const activateRulerDelete = useCallback(() => {
+    setRulerActive(false);
+    rulerDeleteModeRef.current = true;
+    setRulerDeleteMode(true);
+    onWorkplaneModeChange(false);
+    onSelectShape(null);
+  }, [onSelectShape, onWorkplaneModeChange, setRulerActive]);
+
+  const collapseCameraControls = useCallback(() => {
+    setCameraControlsCollapsed(true);
+    setRulerToolsOpen(false);
+    setRulerActive(false);
+    rulerDeleteModeRef.current = false;
+    setRulerDeleteMode(false);
+  }, [setRulerActive]);
 
   const handleRulerPointPointerDown = useCallback(
     (event: ReactPointerEvent<SVGCircleElement>, pointId: string) => {
-      if (event.button === 1) {
+      if (event.button !== 0) {
+        return;
+      }
+      if (rulerDeleteModeRef.current) {
         event.preventDefault();
         event.stopPropagation();
         removeRulerPoint(pointId);
         return;
       }
-      if (event.button !== 0 || !rulerModeRef.current) {
+      if (!rulerModeRef.current) {
         return;
       }
       const point = rulerModelRef.current.points.find((candidate) => candidate.id === pointId);
@@ -2840,13 +2881,16 @@ export function WorkplaneViewport({
 
   const handleRulerSegmentPointerDown = useCallback(
     (event: ReactPointerEvent<SVGLineElement>, segmentId: string) => {
-      if (event.button === 1) {
+      if (event.button !== 0) {
+        return;
+      }
+      if (rulerDeleteModeRef.current) {
         event.preventDefault();
         event.stopPropagation();
         removeRulerSegment(segmentId);
         return;
       }
-      if (event.button !== 0 || !rulerModeRef.current) {
+      if (!rulerModeRef.current) {
         return;
       }
       event.preventDefault();
@@ -2873,9 +2917,12 @@ export function WorkplaneViewport({
       }
 
       const key = event.key.toLowerCase();
-      if (event.key === "Escape" && rulerModeRef.current) {
+      if (event.key === "Escape" && (rulerToolsOpen || rulerModeRef.current || rulerDeleteModeRef.current)) {
         event.preventDefault();
         setRulerActive(false);
+        rulerDeleteModeRef.current = false;
+        setRulerDeleteMode(false);
+        setRulerToolsOpen(false);
       } else if (key === "f" || event.key === "Home") {
         event.preventDefault();
         resetView();
@@ -2890,7 +2937,7 @@ export function WorkplaneViewport({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [resetView, setRulerActive, zoomCamera]);
+  }, [resetView, rulerToolsOpen, setRulerActive, zoomCamera]);
 
   return (
     <main className="workplane-stage">
@@ -2905,22 +2952,52 @@ export function WorkplaneViewport({
         </div>
       </div>
 
-      <div className="camera-controls" aria-label="Camera controls">
-        <button aria-label="Home" onClick={resetView}>
-          <Home size={28} />
-        </button>
-        <button aria-label="Zoom in" onClick={() => zoomCamera(0.7)}>
-          <Plus size={33} />
-        </button>
-        <button aria-label="Zoom out" onClick={() => zoomCamera(1.35)}>
-          <Minus size={33} />
-        </button>
-        <button className={rulerMode ? "active" : ""} aria-label="Ruler" title="Ruler" aria-pressed={rulerMode} onClick={toggleRulerMode}>
-          <RulerGlyph />
-        </button>
+      <div className={`camera-controls ${cameraControlsCollapsed ? "collapsed" : ""}`} aria-label="Camera controls">
+        {cameraControlsCollapsed ? (
+          <button className="camera-controls-toggle" aria-label="Show camera controls" title="Show controls" aria-expanded={false} onClick={() => setCameraControlsCollapsed(false)}>
+            <ChevronRight size={24} strokeWidth={2.25} aria-hidden="true" />
+          </button>
+        ) : (
+          <>
+            <button className="camera-controls-toggle" aria-label="Hide camera controls" title="Hide controls" aria-expanded={true} onClick={collapseCameraControls}>
+              <ChevronLeft size={24} strokeWidth={2.25} aria-hidden="true" />
+            </button>
+            <button aria-label="Home" onClick={resetView}>
+              <Home size={24} strokeWidth={2.25} />
+            </button>
+            <button aria-label="Zoom in" onClick={() => zoomCamera(0.7)}>
+              <Plus size={28} strokeWidth={2.15} />
+            </button>
+            <button aria-label="Zoom out" onClick={() => zoomCamera(1.35)}>
+              <Minus size={28} strokeWidth={2.15} />
+            </button>
+            <div className="ruler-control-group">
+              <button
+                className={`ruler-trigger ${rulerToolsOpen ? "active" : ""}`}
+                aria-label="Ruler tools"
+                title="Ruler tools"
+                aria-expanded={rulerToolsOpen}
+                aria-controls="ruler-tool-popover"
+                onClick={toggleRulerTools}
+              >
+                <Ruler size={26} strokeWidth={2.2} aria-hidden="true" />
+              </button>
+              {rulerToolsOpen ? (
+                <div id="ruler-tool-popover" className="ruler-tool-popover" aria-label="Ruler actions">
+                  <button className={rulerMode ? "active" : ""} aria-label="Add measurement" title="Add measurement" aria-pressed={rulerMode} onClick={activateRulerAdd}>
+                    <Plus size={21} strokeWidth={2.4} aria-hidden="true" />
+                  </button>
+                  <button className={`ruler-delete-button ${rulerDeleteMode ? "active" : ""}`} aria-label="Delete measurement part" title="Delete measurement part" aria-pressed={rulerDeleteMode} onClick={activateRulerDelete}>
+                    <X size={20} strokeWidth={2.4} aria-hidden="true" />
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </>
+        )}
       </div>
 
-      <section className={`workplane-wrap ${workplaneMode ? "placing-workplane" : ""} ${rulerMode ? "ruler-mode" : ""} ${modifierActive ? "modifier-edge-pick" : ""}`} aria-label="Workplane">
+      <section className={`workplane-wrap ${workplaneMode ? "placing-workplane" : ""} ${rulerMode ? "ruler-mode" : ""} ${rulerDeleteMode ? "ruler-delete-mode" : ""} ${modifierActive ? "modifier-edge-pick" : ""}`} aria-label="Workplane">
         <div className="workplane-plane">
           <div
             className="three-workplane-host"
@@ -2972,6 +3049,7 @@ export function WorkplaneViewport({
               overlay={rulerOverlay}
               startPointId={rulerModel.startPointId}
               active={rulerMode}
+              deleteMode={rulerDeleteMode}
               onPointPointerDown={handleRulerPointPointerDown}
               onSegmentPointerDown={handleRulerSegmentPointerDown}
             />
@@ -3221,6 +3299,9 @@ function rebuildWorkplane(state: ThreeState | null, workspace: WorkspaceSettings
       opacity: 0.68,
       roughness: 0.92,
       side: THREE.FrontSide,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
     }),
   );
   base.name = "WorkplaneBase";
@@ -3235,9 +3316,10 @@ function rebuildWorkplane(state: ThreeState | null, workspace: WorkspaceSettings
 
 function createGridLines(width = WORKPLANE_WIDTH, depth = WORKPLANE_DEPTH, blockSize = DEFAULT_WORKSPACE.gridBlockSize) {
   const group = new THREE.Group();
-  const minor = new THREE.LineBasicMaterial({ color: "#91dff0", transparent: true, opacity: 0.55 });
-  const major = new THREE.LineBasicMaterial({ color: "#4bbddf", transparent: true, opacity: 0.7 });
-  const axis = new THREE.LineBasicMaterial({ color: "#34aad2", transparent: true, opacity: 0.88 });
+  const palette = workplaneGridPalette();
+  const minor = new THREE.LineBasicMaterial({ ...palette.minor, transparent: true, depthWrite: false });
+  const major = new THREE.LineBasicMaterial({ ...palette.major, transparent: true, depthWrite: false });
+  const axis = new THREE.LineBasicMaterial({ ...palette.axis, transparent: true, depthWrite: false });
   const minorPoints: number[] = [];
   const majorPoints: number[] = [];
   const axisPoints: number[] = [];
@@ -3247,28 +3329,21 @@ function createGridLines(width = WORKPLANE_WIDTH, depth = WORKPLANE_DEPTH, block
   };
   const step = clamp(blockSize, MIN_GRID_BLOCK_SIZE, MAX_GRID_BLOCK_SIZE);
   const majorEvery = 4;
-  const xCount = Math.floor(width / step);
-  const zCount = Math.floor(depth / step);
-
-  for (let index = 0; index <= xCount; index += 1) {
-    const x = -width / 2 + index * step;
-    const centeredX = Math.abs(x) < 0.0001 ? 0 : x;
+  for (const { coordinate: centeredX, index } of interiorWorkplaneGridCoordinates(width, step)) {
     const points = centeredX === 0 ? axisPoints : index % majorEvery === 0 ? majorPoints : minorPoints;
-    pushLine(points, [centeredX, 0.04, -depth / 2], [centeredX, 0.04, depth / 2]);
+    pushLine(points, [centeredX, WORKPLANE_LINE_ELEVATION, -depth / 2], [centeredX, WORKPLANE_LINE_ELEVATION, depth / 2]);
   }
 
-  for (let index = 0; index <= zCount; index += 1) {
-    const z = -depth / 2 + index * step;
-    const centeredZ = Math.abs(z) < 0.0001 ? 0 : z;
+  for (const { coordinate: centeredZ, index } of interiorWorkplaneGridCoordinates(depth, step)) {
     const points = centeredZ === 0 ? axisPoints : index % majorEvery === 0 ? majorPoints : minorPoints;
-    pushLine(points, [-width / 2, 0.04, centeredZ], [width / 2, 0.04, centeredZ]);
+    pushLine(points, [-width / 2, WORKPLANE_LINE_ELEVATION, centeredZ], [width / 2, WORKPLANE_LINE_ELEVATION, centeredZ]);
   }
 
-  const border = new THREE.LineBasicMaterial({ color: "#58c5e6", transparent: true, opacity: 0.9 });
-  pushLine(borderPoints, [-width / 2, 0.08, -depth / 2], [width / 2, 0.08, -depth / 2]);
-  pushLine(borderPoints, [width / 2, 0.08, -depth / 2], [width / 2, 0.08, depth / 2]);
-  pushLine(borderPoints, [width / 2, 0.08, depth / 2], [-width / 2, 0.08, depth / 2]);
-  pushLine(borderPoints, [-width / 2, 0.08, depth / 2], [-width / 2, 0.08, -depth / 2]);
+  const border = new THREE.LineBasicMaterial({ ...palette.border, transparent: true, depthWrite: false });
+  pushLine(borderPoints, [-width / 2, WORKPLANE_LINE_ELEVATION, -depth / 2], [width / 2, WORKPLANE_LINE_ELEVATION, -depth / 2]);
+  pushLine(borderPoints, [width / 2, WORKPLANE_LINE_ELEVATION, -depth / 2], [width / 2, WORKPLANE_LINE_ELEVATION, depth / 2]);
+  pushLine(borderPoints, [width / 2, WORKPLANE_LINE_ELEVATION, depth / 2], [-width / 2, WORKPLANE_LINE_ELEVATION, depth / 2]);
+  pushLine(borderPoints, [-width / 2, WORKPLANE_LINE_ELEVATION, depth / 2], [-width / 2, WORKPLANE_LINE_ELEVATION, -depth / 2]);
 
   group.add(linesFromPoints(minorPoints, minor));
   group.add(linesFromPoints(majorPoints, major));
@@ -3281,7 +3356,9 @@ function createGridLines(width = WORKPLANE_WIDTH, depth = WORKPLANE_DEPTH, block
 function linesFromPoints(points: number[], material: THREE.LineBasicMaterial) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
-  return new THREE.LineSegments(geometry, material);
+  const lines = new THREE.LineSegments(geometry, material);
+  lines.renderOrder = 1;
+  return lines;
 }
 
 type CutPreviewShapeFrame = {
@@ -4437,7 +4514,7 @@ function createShapeObject(shape: WorkplaneShape, showEdges = false, onTextureRe
     opacity: shape.hole ? (shape.importedMesh ? 0.34 : 0.52) : 1,
     roughness: shape.hole ? 0.88 : 0.57,
     metalness: 0.02,
-    side: shape.importedMesh?.sourceFormat === "json" || shape.importedMesh?.sourceFormat === "svg" || mirroredAxisCount(shape) % 2 === 1 ? THREE.DoubleSide : THREE.FrontSide,
+    side: shape.importedMesh?.sourceFormat === "json" || mirroredAxisCount(shape) % 2 === 1 ? THREE.DoubleSide : THREE.FrontSide,
   });
 
   const width = shapeWidth(shape);

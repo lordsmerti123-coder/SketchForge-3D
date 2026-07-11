@@ -2,6 +2,7 @@
 
 import { OcctKernel, type ShapeHandle } from "occt-wasm";
 import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse } from "@/lib/cadModifierTypes";
+import { CAD_MODIFIER_RUNTIME_BASE } from "@/lib/cadModifierRuntime";
 
 const HASH_UPPER_BOUND = 2_147_483_647;
 const CAD_EDGE_WIREFRAME_DEFLECTION = 0.035;
@@ -25,9 +26,9 @@ function post(message: CadModifierWorkerResponse, transfer: Transferable[] = [])
 }
 
 function kernel() {
-  const moduleUrl = "/assets/occt/occt-wasm.js";
+  const moduleUrl = `${CAD_MODIFIER_RUNTIME_BASE}/occt-wasm.js`;
   kernelPromise ??= import(/* webpackIgnore: true */ moduleUrl).then((imported: { default: (options?: { locateFile?: (path: string) => string }) => Promise<unknown> }) => imported.default({
-    locateFile: (path) => path.endsWith(".wasm") ? "/assets/occt/occt-wasm.wasm" : path,
+    locateFile: (path) => path.endsWith(".wasm") ? `${CAD_MODIFIER_RUNTIME_BASE}/occt-wasm.wasm` : path,
   })).then((module) => {
     const KernelConstructor = OcctKernel as unknown as new (rawModule: unknown) => OcctKernel;
     return new KernelConstructor(module);
