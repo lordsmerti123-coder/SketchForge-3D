@@ -172,6 +172,7 @@ export function workplaneShapesEqual(a: WorkplaneShape, b: WorkplaneShape) {
     a.groupedBaseWidth === b.groupedBaseWidth &&
     a.groupedBaseDepth === b.groupedBaseDepth &&
     a.groupedBaseHeight === b.groupedBaseHeight &&
+    a.screwHole === b.screwHole &&
     a.locked === b.locked &&
     a.hidden === b.hidden
   );

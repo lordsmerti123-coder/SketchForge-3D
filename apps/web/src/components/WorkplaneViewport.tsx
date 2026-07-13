@@ -17,6 +17,7 @@ import optimerBoldFontJson from "three/examples/fonts/optimer_bold.typeface.json
 import { AlignOverlay, MirrorOverlay, type AlignOverlayState, type MirrorOverlayState } from "@/components/workplane/ActionOverlays";
 import { ShapeInspector, SnapGridControl, type ShapeInspectorUpdateOptions } from "@/components/workplane/ShapeInspector";
 import { WorkspaceSettingsModal } from "@/components/workplane/WorkspaceSettingsModal";
+import { createScrewHoleShape, type ScrewHoleConfig } from "@/lib/screwHoles";
 import { DEFAULT_SNAP_GRID, DEFAULT_WORKPLANE_WORKSPACE, normalizeSnapGrid, normalizeWorkspaceSettings, workplaneSettingsFingerprint } from "@/lib/workplaneSettings";
 import { cleanNearZero, cleanRotationDegrees, fallbackSolidColor, mirroredAxisCount, mirrorSign, preservesEdgeTreatmentSize, proportionalResizeScale, resizedImportedCoordinates, resizedImportedMeshPositions, resizedShapeSize, shapeDepth, shapeWidth } from "@/lib/workplaneShapes";
 import type { SketchForgeMcpViewFace } from "@/lib/sketchforgeMcpProtocol";
@@ -133,10 +134,12 @@ type WorkplaneViewportProps = {
   mirrorReferenceShapes: WorkplaneShape[];
   placementElevation: number;
   workplaneMode: boolean;
+  screwHolePlacement?: { config: ScrewHoleConfig; elevation: number } | null;
   initialSnap?: GridSize;
   initialWorkspace?: WorkplaneWorkspaceSettings;
   workspaceSettingsKey?: string | null;
   onAddShape: (shape: ShapeAsset, point?: { x: number; z: number; elevation?: number }) => void;
+  onPlaceScrewHole?: (point: { x: number; z: number }) => void;
   onAlignAnchorChange: (id: string) => void;
   onAlignPreview: (axis: AlignAxis, target: AlignTarget) => void;
   onAlignPreviewClear: () => void;
@@ -192,6 +195,7 @@ type ThreeState = {
   workplaneLayer: THREE.Group;
   shapeLayer: THREE.Group;
   helperLayer: THREE.Group;
+  placementLayer: THREE.Group;
   modifierLayer: THREE.Group;
   raycaster: THREE.Raycaster;
   pointer: THREE.Vector2;
@@ -1147,10 +1151,12 @@ export function WorkplaneViewport({
   mirrorReferenceShapes,
   placementElevation,
   workplaneMode,
+  screwHolePlacement = null,
   initialSnap,
   initialWorkspace,
   workspaceSettingsKey,
   onAddShape,
+  onPlaceScrewHole,
   onAlignAnchorChange,
   onAlignPreview,
   onAlignPreviewClear,
@@ -1224,6 +1230,7 @@ export function WorkplaneViewport({
   const modifierPreviewActiveRef = useRef(modifierPreviewActive);
   const modifierEdgesRef = useRef(modifierEdges);
   const [hoverModifierEdgeId, setHoverModifierEdgeId] = useState<number | null>(null);
+  const [screwHolePreviewPoint, setScrewHolePreviewPoint] = useState<{ x: number; z: number } | null>(null);
   const selectedIdsKeyRef = useRef(selectedIds.join("|"));
   const perfRef = useRef({
     fps: 0,
@@ -1243,6 +1250,14 @@ export function WorkplaneViewport({
     modifierEdgesRef.current = modifierEdges;
     rebuildModifierEdges(threeRef.current, modifierEdges, selectedModifierEdgeIds, modifierPreviewActive, hoverModifierEdgeId);
   }, [hoverModifierEdgeId, modifierEdges, modifierPreviewActive, selectedModifierEdgeIds]);
+
+  useEffect(() => {
+    setScrewHolePreviewPoint(screwHolePlacement ? { x: 0, z: 0 } : null);
+  }, [screwHolePlacement]);
+
+  useEffect(() => {
+    rebuildScrewHolePreview(threeRef.current, screwHolePlacement, screwHolePreviewPoint);
+  }, [screwHolePlacement, screwHolePreviewPoint]);
 
   const placementElevationRef = useRef(placementElevation);
   const workplaneModeRef = useRef(workplaneMode);
@@ -2341,6 +2356,16 @@ export function WorkplaneViewport({
         return;
       }
 
+      if (screwHolePlacement) {
+        event.preventDefault();
+        const point = toPlanePoint(event.clientX, event.clientY);
+        if (point) {
+          setScrewHolePreviewPoint(point);
+          onPlaceScrewHole?.(point);
+        }
+        return;
+      }
+
       if (workplaneModeRef.current) {
         event.preventDefault();
         const id = pickShape(event.clientX, event.clientY);
@@ -2557,6 +2582,7 @@ export function WorkplaneViewport({
     },
     [
       modifierActive,
+      onPlaceScrewHole,
       onAlignAnchorChange,
       onInteractionActiveChange,
       onModifierEdgeToggle,
@@ -2569,6 +2595,7 @@ export function WorkplaneViewport({
       resolveRulerCandidate,
       selectRulerCandidate,
       setMarqueeFromState,
+      screwHolePlacement,
       toPlanePoint,
       toPlanePointAtY,
       toRawPlanePoint,
@@ -2577,6 +2604,11 @@ export function WorkplaneViewport({
 
   const handlePointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (screwHolePlacement) {
+        const point = toPlanePoint(event.clientX, event.clientY);
+        if (point) setScrewHolePreviewPoint(point);
+        return;
+      }
       if (modifierActiveRef.current) {
         updateModifierEdgeHover(event.clientX, event.clientY);
         return;
@@ -2644,7 +2676,7 @@ export function WorkplaneViewport({
         threeRef.current.needsRender = true;
       }
     },
-    [setMarqueeFromState, toPlanePoint, updateModifierEdgeHover, updateRulerHover, updateTransform],
+    [screwHolePlacement, setMarqueeFromState, toPlanePoint, updateModifierEdgeHover, updateRulerHover, updateTransform],
   );
 
   const handlePointerLeave = useCallback(() => {
@@ -2920,7 +2952,7 @@ export function WorkplaneViewport({
         </button>
       </div>
 
-      <section className={`workplane-wrap ${workplaneMode ? "placing-workplane" : ""} ${rulerMode ? "ruler-mode" : ""} ${modifierActive ? "modifier-edge-pick" : ""}`} aria-label="Workplane">
+      <section className={`workplane-wrap ${workplaneMode ? "placing-workplane" : ""} ${screwHolePlacement ? "screw-hole-placement" : ""} ${rulerMode ? "ruler-mode" : ""} ${modifierActive ? "modifier-edge-pick" : ""}`} aria-label="Workplane">
         <div className="workplane-plane">
           <div
             className="three-workplane-host"
@@ -3072,9 +3104,11 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
   shapeLayer.name = "Shapes";
   const helperLayer = new THREE.Group();
   helperLayer.name = "SelectionHelpers";
+  const placementLayer = new THREE.Group();
+  placementLayer.name = "ScrewHolePlacementPreview";
   const modifierLayer = new THREE.Group();
   modifierLayer.name = "EdgeModifier";
-  scene.add(workplaneLayer, shapeLayer, helperLayer, modifierLayer);
+  scene.add(workplaneLayer, shapeLayer, helperLayer, placementLayer, modifierLayer);
 
   const raycaster = new THREE.Raycaster();
   raycaster.params.Line = { threshold: 1.15 };
@@ -3098,6 +3132,7 @@ function createThreeScene(host: HTMLDivElement): ThreeState {
     workplaneLayer,
     shapeLayer,
     helperLayer,
+    placementLayer,
     modifierLayer,
     raycaster,
     pointer,
@@ -3517,6 +3552,32 @@ function rebuildShapes(state: ThreeState | null, shapes: WorkplaneShape[], selec
   }
 
   rebuildSelectionHelpers(state, shapes, selectedIds);
+}
+
+function rebuildScrewHolePreview(
+  state: ThreeState | null,
+  placement: { config: ScrewHoleConfig; elevation: number } | null,
+  point: { x: number; z: number } | null,
+) {
+  if (!state) return;
+  disposeChildren(state.placementLayer);
+  if (!placement || !point) {
+    state.needsRender = true;
+    return;
+  }
+
+  const preview = createScrewHoleShape(placement.config, { x: point.x, z: point.z, elevation: placement.elevation }, "screw-hole-preview");
+  const object = createShapeObject(preview, false);
+  object.name = "ScrewHolePreview";
+  object.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.material instanceof THREE.Material) {
+      child.material.transparent = true;
+      child.material.opacity = 0.24;
+      child.material.depthWrite = false;
+    }
+  });
+  state.placementLayer.add(object);
+  state.needsRender = true;
 }
 
 function modifierEdgeMaterialStyle(active: boolean, hovered: boolean, previewActive: boolean) {

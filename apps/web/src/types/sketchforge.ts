@@ -27,6 +27,22 @@ export type ShapeAsset = {
   hole?: boolean;
 };
 
+export type MetricScrewSize = "M2" | "M2.5" | "M3" | "M4" | "M5" | "M6";
+export type ScrewHeadType = "socket" | "countersunk" | "button" | "pan" | "hex";
+export type ScrewHoleFit = "precise" | "standard" | "loose";
+export type ScrewHoleMount = "clearance" | "heatSet" | "nutTrap";
+export type ScrewHoleDepthMode = "through" | "blind";
+
+export type ScrewHoleFeature = {
+  metric: MetricScrewSize;
+  screwLength: number;
+  head: ScrewHeadType;
+  fit: ScrewHoleFit;
+  mount: ScrewHoleMount;
+  depthMode: ScrewHoleDepthMode;
+  depth: number;
+};
+
 export type GridSize = "Off" | "0.1 mm" | "0.25 mm" | "0.5 mm" | "1.0 mm" | "2.0 mm" | "5.0 mm" | "Brick";
 export type MeasurementAccuracy = 1 | 2 | 3;
 
@@ -189,6 +205,9 @@ export type WorkplaneShape = {
   groupedBaseWidth?: number;
   groupedBaseDepth?: number;
   groupedBaseHeight?: number;
+  // Preserves the preset behind generated manufacturing cutters so the UI can
+  // describe the hole after it has been placed or restored from a project.
+  screwHole?: ScrewHoleFeature;
   locked?: boolean;
   hidden?: boolean;
 };
