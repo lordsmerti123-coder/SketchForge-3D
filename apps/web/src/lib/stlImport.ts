@@ -4,7 +4,7 @@ import { createLocalId } from "@/lib/localIds";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 const stlLoader = new STLLoader();
-const SUPPORTED_IMPORT_EXTENSIONS = new Set(["stl"]);
+const SUPPORTED_IMPORT_EXTENSIONS = new Set(["stl", "svg"]);
 
 function fileExtension(fileName: string) {
   return fileName.split(".").pop()?.toLowerCase() ?? "";

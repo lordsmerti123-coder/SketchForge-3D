@@ -35,3 +35,7 @@ The app runs at `http://127.0.0.1:3000/` by default.
 - Keep UI behavior local to the relevant component unless the behavior is shared.
 - Use TypeScript types instead of loose object shapes where practical.
 - Keep comments short and useful.
+
+## Contribution Licensing
+
+Unless explicitly agreed otherwise in writing, by submitting a contribution you license it under the MIT License. See [LICENSE](../LICENSE).

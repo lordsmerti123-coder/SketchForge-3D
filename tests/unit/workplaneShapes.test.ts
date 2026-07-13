@@ -16,6 +16,7 @@ import {
   serializeShapesForSync,
   shapeDepth,
   shapeWidth,
+  withHoleMode,
   workplaneShapesEqual,
 } from "@/lib/workplaneShapes";
 
@@ -112,6 +113,29 @@ describe("workplane shape helpers", () => {
     expect(mirroredAxisCount(shape({ mirrorX: true, mirrorY: true }))).toBe(2);
     expect(fallbackSolidColor(shape({ kind: "sphere" }))).toBe("#0098c7");
     expect(fallbackSolidColor(shape({ kind: "box" }))).toBe("#d41721");
+  });
+
+  it("applies an explicitly selected group color to every nested child", () => {
+    const grouped = shape({
+      kind: "mesh",
+      color: "#111111",
+      groupedShapes: [
+        shape({ id: "child-box", color: "#222222" }),
+        shape({
+          id: "child-group",
+          kind: "mesh",
+          color: "#333333",
+          groupedShapes: [shape({ id: "grandchild", kind: "sphere", color: "#444444" })],
+        }),
+      ],
+    });
+
+    const recolored = withHoleMode(grouped, false, "#12abef");
+
+    expect(recolored.color).toBe("#12abef");
+    expect(recolored.groupedShapes?.map((child) => child.color)).toEqual(["#12abef", "#12abef"]);
+    expect(recolored.groupedShapes?.[1].groupedShapes?.[0].color).toBe("#12abef");
+    expect(grouped.groupedShapes?.[0].color).toBe("#222222");
   });
 
   it("can resize the body while preserving fillet and chamfer boundary distances", () => {

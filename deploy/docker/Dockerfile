@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-alpine AS builder
+# The exported web app is architecture-independent. Build it once on the
+# native GitHub runner instead of repeating npm/Next.js under arm64 QEMU.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -11,12 +13,12 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build
+RUN npm run build && npm run verify:static-worker-assets
 
 FROM nginx:stable-alpine AS runner
 
 COPY deploy/docker/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=builder /app/apps/web/out /usr/share/nginx/html
+COPY --from=builder /app/apps/web/.next-export /usr/share/nginx/html
 
 EXPOSE 80
 

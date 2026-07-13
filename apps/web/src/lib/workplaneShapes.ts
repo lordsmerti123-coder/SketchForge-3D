@@ -98,6 +98,16 @@ export function fallbackSolidColor(shape: WorkplaneShape) {
   return "#d41721";
 }
 
+export function withHoleMode(shape: WorkplaneShape, hole: boolean, parentColor?: string): WorkplaneShape {
+  const color = hole ? "#b8c2cc" : (parentColor ?? fallbackSolidColor(shape));
+  return {
+    ...shape,
+    hole,
+    color,
+    groupedShapes: shape.groupedShapes?.map((child) => withHoleMode(child, hole, parentColor)),
+  };
+}
+
 export function mirrorSign(value?: boolean) {
   return value ? -1 : 1;
 }

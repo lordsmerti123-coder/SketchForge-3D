@@ -2797,36 +2797,111 @@ button {
 .camera-controls {
   position: absolute;
   top: 173px;
-  left: 8px;
+  left: 10px;
   z-index: 8;
-  display: grid;
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(194, 209, 219, 0.9);
+  border-radius: 17px;
+  box-shadow: 0 10px 30px rgba(32, 64, 84, 0.14), 0 2px 6px rgba(32, 64, 84, 0.08);
+  backdrop-filter: blur(14px) saturate(1.15);
 }
 
 .camera-controls button {
+  position: relative;
   display: grid;
-  width: 51px;
-  height: 51px;
+  width: 44px;
+  height: 43px;
   place-items: center;
   color: #173b5a;
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid #dfe6eb;
-  border-radius: 999px;
-  box-shadow: 0 1px 2px rgba(30, 50, 70, 0.08);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  box-shadow: none;
   cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
 }
 
 .camera-controls button:hover {
-  color: #000;
-  border-color: #c4d2dc;
+  color: #071f32;
+  background: rgba(223, 239, 247, 0.82);
+  border-color: rgba(155, 190, 207, 0.7);
+  transform: translateX(1px);
+}
+
+.camera-controls button:focus-visible {
+  outline: 2px solid #28a9d2;
+  outline-offset: 1px;
+}
+
+.camera-controls.collapsed {
+  border-radius: 17px;
 }
 
 .camera-controls button.active,
 .camera-controls button[aria-pressed="true"] {
-  color: #007eae;
-  background: #e8f8fd;
-  border-color: #63cbe8;
-  box-shadow: 0 0 0 3px rgba(0, 159, 207, 0.14), 0 1px 2px rgba(30, 50, 70, 0.08);
+  color: #006b94;
+  background: #def5fb;
+  border-color: #6fc8df;
+  box-shadow: inset 3px 0 0 #079bc6;
+}
+
+.ruler-control-group {
+  position: relative;
+  margin-top: 6px;
+}
+
+.ruler-control-group::before {
+  position: absolute;
+  top: -5px;
+  right: 8px;
+  left: 8px;
+  height: 1px;
+  content: "";
+  background: rgba(117, 144, 160, 0.28);
+}
+
+.ruler-tool-popover {
+  position: absolute;
+  top: 2px;
+  left: calc(100% + 10px);
+  display: flex;
+  gap: 3px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(194, 209, 219, 0.94);
+  border-radius: 13px;
+  box-shadow: 0 8px 24px rgba(32, 64, 84, 0.18), 0 2px 6px rgba(32, 64, 84, 0.1);
+  backdrop-filter: blur(14px) saturate(1.15);
+  animation: ruler-tools-in 130ms ease-out;
+}
+
+.camera-controls .ruler-tool-popover button {
+  width: 35px;
+  height: 35px;
+  border-radius: 9px;
+}
+
+.camera-controls .ruler-tool-popover .ruler-delete-button.active {
+  color: #b42318;
+  background: #fff0ee;
+  border-color: #ee9b92;
+  box-shadow: inset 3px 0 0 #dc3f36;
+}
+
+@keyframes ruler-tools-in {
+  from {
+    opacity: 0;
+    transform: translateX(-4px) scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
 }
 
 .workplane-wrap {
@@ -2870,6 +2945,11 @@ button {
   cursor: crosshair;
 }
 
+.workplane-wrap.ruler-delete-mode .three-workplane-host,
+.workplane-wrap.ruler-delete-mode .three-workplane-host:active {
+  cursor: default;
+}
+
 .workplane-wrap.modifier-edge-pick .three-workplane-host,
 .workplane-wrap.modifier-edge-pick .three-workplane-host:active {
   cursor: crosshair;
@@ -2909,6 +2989,7 @@ button {
   stroke-width: 2;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
+  transition: stroke 120ms ease, stroke-width 120ms ease;
 }
 
 .ruler-segment-hit {
@@ -2930,6 +3011,19 @@ button {
 .ruler-point {
   pointer-events: all;
   cursor: pointer;
+  transition: fill 120ms ease, stroke 120ms ease, filter 120ms ease;
+}
+
+.ruler-overlay.delete-mode .ruler-segment-group:hover .ruler-segment {
+  stroke: #dc3f36;
+  stroke-width: 3;
+  filter: drop-shadow(0 0 2px rgba(220, 63, 54, 0.3));
+}
+
+.ruler-overlay.delete-mode .ruler-point:hover {
+  fill: #fff0ee;
+  stroke: #dc3f36;
+  filter: drop-shadow(0 0 3px rgba(220, 63, 54, 0.36));
 }
 
 .ruler-point.pending {
@@ -4253,6 +4347,14 @@ button {
   border: 1px solid #cfd9e2;
   border-radius: 2px;
   font-weight: 700;
+}
+
+.workspace-global-note {
+  margin: -10px 0 0 153px;
+  color: #718697;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
 }
 
 .workspace-dimensions {

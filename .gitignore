@@ -5,6 +5,7 @@ node_modules/
 
 # Next.js
 .next/
+.next-export/
 out/
 build/
 dist/
@@ -32,6 +33,7 @@ playwright-report/
 
 # Local workspace state
 .codex/
+.codex-run/
 .codex-remote-attachments/
 
 # OS/editor noise

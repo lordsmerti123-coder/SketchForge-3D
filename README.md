@@ -17,12 +17,13 @@
   <p>
     <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
     <a href="https://github.com/Formsmith746/SketchForge-3D/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Formsmith746/SketchForge-3D?style=social"></a>
+    <a href="https://github.com/sponsors/Formsmith746"><img alt="GitHub Sponsors" src="https://img.shields.io/github/sponsors/Formsmith746?label=sponsor&logo=githubsponsors&color=bf3989"></a>
     <img alt="Local first" src="https://img.shields.io/badge/local--first-no%20account-0ea5e9">
-    <img alt="Version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-2563eb">
+    <img alt="Version 0.6.0" src="https://img.shields.io/badge/version-0.6.0-2563eb">
   </p>
 </div>
 
-![SketchForge editor showing a selected box on the workplane](docs/media/sketchforge-editor-v0.5.png)
+![SketchForge editor showing a selected box on the workplane](docs/media/sketchforge-editor-v0.6.png)
 
 ## Why SketchForge
 
@@ -274,40 +275,6 @@ Build a static export:
 ```bash
 npm run export
 ```
-
-## Project Layout
-
-```text
-apps/web/                   Next.js app workspace
-apps/web/src/app/           App routes, dashboard, API routes, styles
-apps/web/src/components/    Editor, viewport, sidebar, icons, controls
-apps/web/src/types/         Shared shape and editor types
-apps/web/src/generated/     Generated Manifold runtime source
-apps/web/src/lib/           Shared utilities
-apps/web/public/assets/     Static app images, icons, logos, shape assets
-scripts/                    Build and local automation helpers
-docs/media/                 README screenshots and demo videos
-docs/mcp/                   MCP client configuration examples
-docs/skills/                Optional AI-agent skill bundles
-deploy/docker/              Docker, Compose, and Nginx deployment files
-.github/                    Issue templates and community files
-```
-
-## Current Status
-
-SketchForge is alpha, but the core editor loop is usable today:
-
-- create and reopen local projects
-- add, move, resize, rotate, mirror, align, duplicate, hide, and delete shapes
-- switch shapes between solid and hole modes
-- group and ungroup geometry
-- apply and remove chamfer/fillet edge treatments
-- import STL files
-- import and export STEP files
-- export STL or OBJ
-- generate project thumbnails
-
-The next big areas are workflow polish, more geometry edge-case testing, stronger automated editor coverage, and better release documentation.
 
 ## Contributing
 

@@ -80,9 +80,11 @@ describe("workplane settings helpers", () => {
 
   it("fingerprints workspace and snap settings together", () => {
     const base = workplaneSettingsFingerprint(DEFAULT_WORKPLANE_WORKSPACE, "1.0 mm");
+    const equivalentNewReference = workplaneSettingsFingerprint({ ...DEFAULT_WORKPLANE_WORKSPACE }, "1.0 mm");
     const changedSnap = workplaneSettingsFingerprint(DEFAULT_WORKPLANE_WORKSPACE, "5.0 mm");
     const changedWorkspace = workplaneSettingsFingerprint({ ...DEFAULT_WORKPLANE_WORKSPACE, width: 300 }, "1.0 mm");
 
+    expect(equivalentNewReference).toBe(base);
     expect(changedSnap).not.toBe(base);
     expect(changedWorkspace).not.toBe(base);
   });
