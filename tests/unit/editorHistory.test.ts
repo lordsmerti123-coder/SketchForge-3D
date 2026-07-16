@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendEditorHistorySnapshot, boundedEditorHistory, editorHistoryEntry, hydrateEditorHistoryState, projectShapesFingerprint } from "@/lib/editorHistory";
+import { appendEditorHistorySnapshot, boundedEditorHistory, editorHistoryEntry, editorHistoryForExport, hydrateEditorHistoryState, projectShapesFingerprint } from "@/lib/editorHistory";
 import type { WorkplaneShape } from "@/types/sketchforge";
 
 function box(overrides: Partial<WorkplaneShape> = {}): WorkplaneShape {
@@ -106,5 +106,19 @@ describe("editor history snapshots", () => {
     expect(restored.index).toBe(0);
     expect(restored.entries).toHaveLength(1);
     expect(restored.entries[0].shapes[0].x).toBe(9);
+  });
+
+  it("selects all history or the requested number of recent undo actions for project export", () => {
+    const entries = Array.from({ length: 140 }, (_, x) => editorHistoryEntry([box({ x })], []));
+
+    const unlimited = editorHistoryForExport(entries, 120, "unlimited");
+    expect(unlimited.entries).toBe(entries);
+    expect(unlimited.index).toBe(120);
+
+    const lastThirty = editorHistoryForExport(entries, 120, 30);
+    expect(lastThirty.entries).toHaveLength(31);
+    expect(lastThirty.index).toBe(30);
+    expect(lastThirty.entries[0].shapes[0].x).toBe(90);
+    expect(lastThirty.entries[30].shapes[0].x).toBe(120);
   });
 });

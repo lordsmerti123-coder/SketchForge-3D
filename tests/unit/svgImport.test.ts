@@ -4,12 +4,13 @@ import {
   MAX_SVG_GEOMETRY_ELEMENTS,
   analyzeTriangleSoup,
   buildSvgExtrusionFromPaths,
+  normalizeSvgDocumentType,
   normalizeSvgUseReferences,
   validateClosedSolidTriangleSoup,
   validateSvgSourcePreflight,
 } from "@/lib/svgImport";
 
-function shapePath(points: Array<[number, number]>, options: { closed?: boolean; fill?: string; fillOpacity?: number; opacity?: number } = {}) {
+function shapePath(points: Array<[number, number]>, options: { closed?: boolean; fill?: string; fillOpacity?: number; opacity?: number; stroke?: string; strokeOpacity?: number; strokeWidth?: number } = {}) {
   const path = new THREE.ShapePath();
   path.moveTo(points[0][0], points[0][1]);
   for (const [x, y] of points.slice(1)) path.lineTo(x, y);
@@ -19,6 +20,9 @@ function shapePath(points: Array<[number, number]>, options: { closed?: boolean;
       fill: options.fill ?? "#000",
       fillOpacity: options.fillOpacity ?? 1,
       opacity: options.opacity ?? 1,
+      stroke: options.stroke,
+      strokeOpacity: options.strokeOpacity ?? 1,
+      strokeWidth: options.strokeWidth ?? 1,
       visibility: "visible",
     },
   };
@@ -50,9 +54,23 @@ function geometryPositions(geometry: THREE.BufferGeometry) {
 }
 
 describe("SVG source preflight", () => {
-  it("rejects XML entities and external references", () => {
-    expect(() => validateSvgSourcePreflight('<!DOCTYPE svg [<!ENTITY x "bad">]><svg/>')).toThrow(/document types and entities/i);
+  it("accepts and removes the standard SVG 1.1 document type", () => {
+    const source = `<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1"/>`;
+    expect(() => validateSvgSourcePreflight(source)).not.toThrow();
+    expect(normalizeSvgDocumentType(source)).not.toMatch(/<!DOCTYPE/i);
+  });
+
+  it("continues to reject XML entities, non-SVG doctypes, and external references", () => {
+    expect(() => validateSvgSourcePreflight('<!DOCTYPE svg [<!ENTITY x "bad">]><svg/>')).toThrow(/entities/i);
+    expect(() => validateSvgSourcePreflight('<!DOCTYPE html><svg/>')).toThrow(/only the standard SVG 1\.1 document type/i);
     expect(() => validateSvgSourcePreflight('<svg><use href="https://example.com/art.svg#part"/></svg>')).toThrow(/external references/i);
+  });
+
+  it("reports malformed Tinkercad cross-section geometry", () => {
+    expect(() => validateSvgSourcePreflight('<svg width="NaNmm" viewBox="NaN NaN NaN NaN"><path d="z"/></svg>')).toThrow(/workplane intersects the model/i);
   });
 
   it("rejects excessive geometry before SVGLoader runs", () => {
@@ -85,10 +103,28 @@ describe("SVG path extrusion", () => {
   });
 
   it("ignores non-filled and fully transparent paths", () => {
-    expect(() => buildSvgExtrusionFromPaths([rectangle(0, 0, 10, 10, { fill: "none" })])).toThrow(/no readable visible filled paths/i);
-    expect(() => buildSvgExtrusionFromPaths([rectangle(0, 0, 10, 10, { opacity: 0 })])).toThrow(/no readable visible filled paths/i);
-    expect(() => buildSvgExtrusionFromPaths([rectangle(0, 0, 10, 10, { fillOpacity: 0 })])).toThrow(/no readable visible filled paths/i);
-    expect(() => buildSvgExtrusionFromPaths([rectangle(0, 0, 10, 10, { fill: "#00000000" })])).toThrow(/no readable visible filled paths/i);
+    expect(() => buildSvgExtrusionFromPaths([rectangle(0, 0, 10, 10, { fill: "none" })])).toThrow(/no readable visible/i);
+    expect(() => buildSvgExtrusionFromPaths([rectangle(0, 0, 10, 10, { opacity: 0 })])).toThrow(/no readable visible/i);
+    expect(() => buildSvgExtrusionFromPaths([rectangle(0, 0, 10, 10, { fillOpacity: 0 })])).toThrow(/no readable visible/i);
+    expect(() => buildSvgExtrusionFromPaths([rectangle(0, 0, 10, 10, { fill: "#00000000" })])).toThrow(/no readable visible/i);
+  });
+
+  it("imports a closed Tinkercad-style stroke as an extrusion profile", () => {
+    const tinkercadOutline = shapePath([[0, 0], [10, 0], [10, 6], [0, 6], [0, 0]], {
+      closed: false,
+      fill: "none",
+      stroke: "rgb(255,0,0)",
+      strokeWidth: 0.001,
+    });
+    const result = buildSvgExtrusionFromPaths([tinkercadOutline]);
+    expect(result.analysis.width).toBeCloseTo(10);
+    expect(result.analysis.depth).toBeCloseTo(6);
+    expect(result.analysis.volume).toBeCloseTo(240);
+  });
+
+  it("explains how to fix an open stroke-only SVG", () => {
+    const openStroke = shapePath([[0, 0], [10, 0], [5, 5]], { closed: false, fill: "none", stroke: "#000", strokeWidth: 1 });
+    expect(() => buildSvgExtrusionFromPaths([openStroke])).toThrow(/only open strokes/i);
   });
 
   it("imports open filled contours when they enclose usable area and skips lines", () => {

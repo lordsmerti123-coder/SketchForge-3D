@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Download, X } from "lucide-react";
+import { Check, Download, FolderOpen, X } from "lucide-react";
 import type manifoldModule from "manifold-3d";
 import type { ManifoldToplevel } from "manifold-3d";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -73,14 +73,17 @@ import {
   type CadModifierRequestPhase,
 } from "@/lib/cadModifierRuntime";
 import { cloneWorkplaneShapeSnapshot, compactEdgeTreatmentHistory, edgeTreatmentAppliedFrame, restoreShapeBeforeEdgeTreatment } from "@/lib/edgeTreatmentHistory";
-import { appendEditorHistorySnapshot, editorHistoryEntry, hydrateEditorHistoryState, projectShapesFingerprint, type EditorHistoryEntry, type EditorHistoryState } from "@/lib/editorHistory";
+import { appendEditorHistorySnapshot, editorHistoryEntry, editorHistoryForExport, hydrateEditorHistoryState, projectShapesFingerprint, type EditorHistoryEntry, type EditorHistoryExportLimit, type EditorHistoryState } from "@/lib/editorHistory";
 import { snapShapeFootprintToVisibleGrid, visibleGridStep } from "@/lib/gridSnap";
 import { createLocalId } from "@/lib/localIds";
 import { projectExportFileName } from "@/lib/exportNames";
+import { attachProjectAsset, dedupeProjectAssets, projectAssetFromBytes, sourceFormatForFileName } from "@/lib/projectAssets";
+import { exportSkfProject, SKF_MEDIA_TYPE } from "@/lib/skfProject";
 import { makeShapeFromAsset, sceneShape, toolbarShapeAssets, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
 import { importedShapeFromSvg, invalidSvgMeshReason } from "@/lib/svgImport";
-import { normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
+import { toSvgProjection, type SvgProjectionLayer } from "@/lib/svgExport";
+import { normalizeSnapGrid, normalizeWorkspaceSettings } from "@/lib/workplaneSettings";
 import {
   SKETCHFORGE_MCP_POLL_MS,
   SKETCHFORGE_MCP_ROUTE,
@@ -90,12 +93,14 @@ import {
   type SketchForgeMcpViewFace,
 } from "@/lib/sketchforgeMcpProtocol";
 import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierKind, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse } from "@/lib/cadModifierTypes";
-import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ShapeAsset, SketchImage, SketchPoint, SketchProfile, SketchSegment, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
+import type { AlignAxis, AlignHandleStatus, AlignTarget, GridSize, ProjectAsset, ShapeAsset, SketchImage, SketchPoint, SketchProfile, SketchSegment, WorkplaneShape, WorkplaneWorkspaceSettings } from "@/types/sketchforge";
 
 export { importedShapeFromStl, importedShapeFromSvg };
 
 type TopPanel = "import" | "export" | "tips" | "profile" | "settings" | null;
-type ExportFormat = "stl" | "obj";
+type ExportFormat = "stl" | "obj" | "step" | "svg" | "skf";
+type DirectExportFormat = Exclude<ExportFormat, "step" | "skf">;
+type SkfHistoryLimit = EditorHistoryExportLimit;
 type ToolbarMode = "geometry" | "sketch";
 type Vec3 = [number, number, number];
 type MeshData = { name: string; vertices: Vec3[]; faces: [number, number, number][] };
@@ -1519,6 +1524,7 @@ async function restoreEdgeTreatmentInShape(shape: WorkplaneShape, path: number[]
       locked: shape.locked,
       hidden: shape.hidden,
       edgeResizeMode: shape.edgeResizeMode,
+      groupOperation: shape.groupOperation,
       edgeTreatments: shape.edgeTreatments,
       edgeTreatmentHistory: shape.edgeTreatmentHistory?.length ? compactEdgeTreatmentHistory(shape.edgeTreatmentHistory) : undefined,
     }),
@@ -2280,6 +2286,36 @@ function toObj(meshes: MeshData[]) {
   return lines.join("\n");
 }
 
+async function toSvg(shapes: WorkplaneShape[], title: string) {
+  const runtime = await getManifoldRuntime();
+  const layers: SvgProjectionLayer[] = [];
+
+  for (const shape of shapes) {
+    const created: ManifoldSolid[] = [];
+    const projectedObjects: unknown[] = [];
+    try {
+      const solid = shapeToManifoldSolid(runtime, shape, created);
+      if (!solid || solid.status() !== "NoError" || solid.numTri() < 1) {
+        throw new Error(`Could not convert ${shape.name} into a watertight SVG outline`);
+      }
+
+      const topView = solid.rotate([90, 0, 0]);
+      if (topView !== solid) created.push(topView);
+      const projection = topView.project();
+      projectedObjects.push(projection);
+      const simplified = projection.simplify(0.00001);
+      if (simplified !== projection) projectedObjects.push(simplified);
+      const polygons = simplified.toPolygons();
+      if (!polygons.length) throw new Error(`Top view of ${shape.name} has no exportable area`);
+      layers.push({ name: shape.name, color: shape.color, polygons });
+    } finally {
+      [...new Set([...projectedObjects, ...created])].reverse().forEach(disposeManifold);
+    }
+  }
+
+  return toSvgProjection(layers, title);
+}
+
 function triggerBrowserDownload(filename: string, content: string, type: string) {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
@@ -2310,6 +2346,31 @@ async function downloadTextFile(filename: string, content: string, type: string)
   }
 
   triggerBrowserDownload(filename, content, type);
+  return { mode: "browser" };
+}
+
+async function downloadBlobFile(filename: string, blob: Blob): Promise<DownloadResult> {
+  const mode = window.localStorage.getItem(DOWNLOAD_MODE_STORAGE_KEY);
+  const folder = window.localStorage.getItem(DOWNLOAD_FOLDER_STORAGE_KEY)?.trim() ?? "";
+  if (!STATIC_EXPORT_BUILD && mode === "folder" && folder) {
+    const formData = new FormData();
+    formData.set("file", blob, filename);
+    formData.set("filename", filename);
+    formData.set("folder", folder);
+    const response = await fetch("/api/local-download", { method: "POST", body: formData });
+    const payload = (await response.json().catch(() => null)) as { error?: string; path?: string } | null;
+    if (!response.ok || !payload?.path) throw new Error(payload?.error ?? "Could not save export");
+    return { mode: "folder", path: payload.path };
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   return { mode: "browser" };
 }
 
@@ -4978,35 +5039,46 @@ function readMcpEditorIdentity() {
 }
 
 export function SketchForgeEditor({
+  initialAssets = [],
   initialShapes = [],
   initialHistory,
   initialHistoryIndex,
   initialSnap,
   initialWorkspace,
+  initialPlacementElevation = 0,
   onHome,
+  onOpenSkfProjectFile,
   onProjectShapesChange,
   onProjectSnapshot,
   onProjectWorkspaceChange,
   projectId,
   projectName = "SketchForge design",
+  projectCreatedAt = Date.now(),
+  projectModifiedAt = Date.now(),
   projectRevision = 0,
 }: {
+  initialAssets?: ProjectAsset[];
   initialShapes?: WorkplaneShape[];
   initialHistory?: EditorHistoryEntry[];
   initialHistoryIndex?: number;
   initialSnap?: GridSize;
   initialWorkspace?: WorkplaneWorkspaceSettings;
+  initialPlacementElevation?: number;
   onHome?: () => void;
+  onOpenSkfProjectFile?: (file: File) => Promise<{ ok: boolean; message: string } | void> | { ok: boolean; message: string } | void;
   onProjectShapesChange?: (snapshot: {
     projectId: string;
     shapes: WorkplaneShape[];
     history: EditorHistoryEntry[];
     historyIndex: number;
+    assets: ProjectAsset[];
   }) => void;
   onProjectSnapshot?: (snapshot: { image: string; projectId: string; shapes: number }) => void;
-  onProjectWorkspaceChange?: (snapshot: { projectId: string; workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => void;
+  onProjectWorkspaceChange?: (snapshot: { projectId: string; workspace: WorkplaneWorkspaceSettings; snap: GridSize; placementElevation?: number }) => void;
   projectId?: string | null;
   projectName?: string;
+  projectCreatedAt?: number;
+  projectModifiedAt?: number;
   projectRevision?: number;
 } = {}) {
   const initialSceneRef = useRef<WorkplaneShape[] | null>(null);
@@ -5018,17 +5090,20 @@ export function SketchForgeEditor({
     initialHistoryStateRef.current = hydrateEditorHistoryState(initialSceneRef.current, initialHistory, initialHistoryIndex);
   }
   const [shapes, setShapes] = useState<WorkplaneShape[]>(() => initialSceneRef.current as WorkplaneShape[]);
+  const [projectAssets, setProjectAssets] = useState<ProjectAsset[]>(() => dedupeProjectAssets(initialAssets));
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [clipboard, setClipboard] = useState<WorkplaneShape[]>([]);
   const [systemClipboardSupported, setSystemClipboardSupported] = useState(false);
   const [history, setHistory] = useState<EditorHistoryEntry[]>(() => (initialHistoryStateRef.current as EditorHistoryState).entries);
   const [historyIndex, setHistoryIndex] = useState(() => (initialHistoryStateRef.current as EditorHistoryState).index);
-  const [placementElevation, setPlacementElevation] = useState(0);
+  const [placementElevation, setPlacementElevation] = useState(() => Number.isFinite(initialPlacementElevation) ? initialPlacementElevation : 0);
   const [workspaceSettings, setWorkspaceSettings] = useState<WorkplaneWorkspaceSettings>(() => normalizeWorkspaceSettings(initialWorkspace));
+  const [snapGrid, setSnapGrid] = useState<GridSize>(() => normalizeSnapGrid(initialSnap));
   const [workplaneMode, setWorkplaneMode] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [topPanel, setTopPanel] = useState<TopPanel>(null);
   const [stepExporting, setStepExporting] = useState(false);
+  const [skfExporting, setSkfExporting] = useState(false);
   const [alignMode, setAlignMode] = useState(false);
   const [alignAnchorId, setAlignAnchorId] = useState<string | null>(null);
   const [alignPreview, setAlignPreview] = useState<{ axis: AlignAxis; target: AlignTarget } | null>(null);
@@ -5037,6 +5112,7 @@ export function SketchForgeEditor({
   const [activeMode, setActiveMode] = useState("3D Design");
   const [notice, setNotice] = useState("Ready");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const projectFileInputRef = useRef<HTMLInputElement | null>(null);
   const sketchImageInputRef = useRef<HTMLInputElement | null>(null);
   const booleanAutomationRunRef = useRef<string | null>(null);
   const projectHydratingRef = useRef(false);
@@ -5048,6 +5124,7 @@ export function SketchForgeEditor({
   const lastProjectIdRef = useRef<string | null>(null);
   const projectSnapshotRunRef = useRef(0);
   const shapesRef = useRef(shapes);
+  const projectAssetsRef = useRef(projectAssets);
   const selectedIdsRef = useRef(selectedIds);
   const workspaceSettingsRef = useRef(workspaceSettings);
   const noticeRef = useRef(notice);
@@ -5316,6 +5393,10 @@ export function SketchForgeEditor({
   }, [shapes]);
 
   useEffect(() => {
+    projectAssetsRef.current = projectAssets;
+  }, [projectAssets]);
+
+  useEffect(() => {
     selectedIdsRef.current = selectedIds;
     const currentHistory = historyRef.current;
     const currentIndex = Math.min(historyIndexRef.current, Math.max(0, currentHistory.length - 1));
@@ -5362,6 +5443,10 @@ export function SketchForgeEditor({
   useEffect(() => {
     setWorkspaceSettings(normalizeWorkspaceSettings(initialWorkspace));
   }, [initialWorkspace]);
+
+  useEffect(() => {
+    setSnapGrid(normalizeSnapGrid(initialSnap));
+  }, [initialSnap]);
 
   const selectedShapes = useMemo(() => shapes.filter((shape) => selectedIds.includes(shape.id)), [selectedIds, shapes]);
   const selectedShape = selectedShapes.at(-1) ?? null;
@@ -5501,6 +5586,7 @@ export function SketchForgeEditor({
           shapes: canonicalNext,
           history: historyRef.current,
           historyIndex: historyIndexRef.current,
+          assets: projectAssetsRef.current,
         });
         projectSyncTimerRef.current = null;
       }, 120);
@@ -5581,13 +5667,24 @@ export function SketchForgeEditor({
   const updateProjectWorkspaceSettings = useCallback(
     (settings: { workspace: WorkplaneWorkspaceSettings; snap: GridSize }) => {
       setWorkspaceSettings(settings.workspace);
+      setSnapGrid(settings.snap);
       if (!projectId || !onProjectWorkspaceChange) {
         return;
       }
-      onProjectWorkspaceChange({ projectId, ...settings });
+      onProjectWorkspaceChange({ projectId, ...settings, placementElevation });
     },
-    [onProjectWorkspaceChange, projectId],
+    [onProjectWorkspaceChange, placementElevation, projectId],
   );
+
+  useEffect(() => {
+    if (!projectId || !onProjectWorkspaceChange) return;
+    onProjectWorkspaceChange({
+      projectId,
+      workspace: workspaceSettingsRef.current,
+      snap: snapGrid,
+      placementElevation,
+    });
+  }, [onProjectWorkspaceChange, placementElevation, projectId, snapGrid]);
 
   const commitShapes = useCallback(
     (next: WorkplaneShape[], nextSelection: string | string[] | null = selectedIds, message?: string) => {
@@ -6066,6 +6163,10 @@ export function SketchForgeEditor({
       lastProjectIdRef.current = projectId;
       lastProjectShapesSyncRef.current = "";
       lastProjectShapesEchoRef.current = null;
+      const nextAssets = dedupeProjectAssets(initialAssets);
+      projectAssetsRef.current = nextAssets;
+      setProjectAssets(nextAssets);
+      setPlacementElevation(Number.isFinite(initialPlacementElevation) ? initialPlacementElevation : 0);
     }
     const incoming = initialShapes.map(canonicalizeShape);
     const incomingSerialized = projectShapesFingerprint(incoming);
@@ -6093,7 +6194,7 @@ export function SketchForgeEditor({
     setHistory(hydratedHistory.entries);
     setHistoryIndex(hydratedHistory.index);
     setNotice(incoming.length ? "Project synced" : "Ready");
-  }, [initialHistory, initialHistoryIndex, initialShapes, projectId, projectInteractionActive, projectRevision]);
+  }, [initialAssets, initialHistory, initialHistoryIndex, initialPlacementElevation, initialShapes, projectId, projectInteractionActive, projectRevision]);
 
   useEffect(() => {
     if (!projectId || !onProjectShapesChange) {
@@ -6926,7 +7027,8 @@ export function SketchForgeEditor({
       return;
     }
     const selected = new Set(selectedIds);
-    commitShapes([...shapesRef.current.filter((shape) => !selected.has(shape.id)), group], group.id, `Grouped ${selectedShapes.length} shapes`);
+    const editableGroup = canonicalizeShape({ ...group, groupOperation: "group" });
+    commitShapes([...shapesRef.current.filter((shape) => !selected.has(shape.id)), editableGroup], editableGroup.id, `Grouped ${selectedShapes.length} shapes`);
   }, [commitShapes, selectedIds, selectedShapes]);
 
   const intersectSelected = useCallback(async () => {
@@ -6957,7 +7059,7 @@ export function SketchForgeEditor({
       return;
     }
 
-    const intersection = result.group;
+    const intersection = result.group ? canonicalizeShape({ ...result.group, groupOperation: "intersection" }) : null;
     if (!intersection) {
       return;
     }
@@ -7234,8 +7336,9 @@ export function SketchForgeEditor({
           }
           throw new Error(result.failureNotice);
         }
-        commitShapes([...currentShapes().filter((shape) => !ids.has(shape.id)), result.group], result.group.id, `MCP grouped ${groupable.length} objects`);
-        return { object: mcpShapeSummary(result.group) };
+        const editableGroup = canonicalizeShape({ ...result.group, groupOperation: "group" });
+        commitShapes([...currentShapes().filter((shape) => !ids.has(shape.id)), editableGroup], editableGroup.id, `MCP grouped ${groupable.length} objects`);
+        return { object: mcpShapeSummary(editableGroup) };
       }
 
       if (command.action === "ungroup_objects") {
@@ -7276,8 +7379,9 @@ export function SketchForgeEditor({
         if (!result.group) {
           throw new Error(result.failureNotice);
         }
-        commitShapes([...remainingShapes, result.group], result.group.id, "MCP boolean cut complete");
-        return { object: mcpShapeSummary(result.group) };
+        const editableGroup = canonicalizeShape({ ...result.group, groupOperation: "group" });
+        commitShapes([...remainingShapes, editableGroup], editableGroup.id, "MCP boolean cut complete");
+        return { object: mcpShapeSummary(editableGroup) };
       }
 
       if (command.action === "separate_parts") {
@@ -7586,7 +7690,7 @@ export function SketchForgeEditor({
     void run();
   }, [commitShapes]);
 
-  const exportDesign = useCallback((format: ExportFormat) => {
+  const exportDesign = useCallback((format: DirectExportFormat, exportName: string) => {
     const sourceShapes = hasSelection ? selectedShapes : shapes;
     const exportable = sourceShapes.filter((shape) => !shape.hole);
     if (exportable.length === 0) {
@@ -7598,7 +7702,6 @@ export function SketchForgeEditor({
       setNotice(`${invalidSvg}. Re-import the source SVG after fixing its contours`);
       return;
     }
-    const meshes = exportable.map(meshForShape);
     const selectedNotice = `Exported ${exportable.length} selected shape${exportable.length === 1 ? "" : "s"}`;
     const finishNotice = (label: string, result: DownloadResult) => {
       if (result.mode === "folder") {
@@ -7610,18 +7713,27 @@ export function SketchForgeEditor({
     const failNotice = (label: string, error: unknown) => {
       setNotice(error instanceof Error ? error.message : `Could not export ${label}`);
     };
+    if (format === "svg") {
+      setNotice("Building SVG top-view projection…");
+      void toSvg(exportable, exportName.trim() || projectName)
+        .then((content) => downloadTextFile(projectExportFileName(exportName, "svg"), content, "image/svg+xml;charset=utf-8"))
+        .then((result) => finishNotice("SVG", result))
+        .catch((error: unknown) => failNotice("SVG", error));
+      return;
+    }
+    const meshes = exportable.map(meshForShape);
     if (format === "stl") {
-      void downloadTextFile(projectExportFileName(projectName, "stl"), toStl(meshes), "model/stl")
+      void downloadTextFile(projectExportFileName(exportName, "stl"), toStl(meshes), "model/stl")
         .then((result) => finishNotice("STL", result))
         .catch((error: unknown) => failNotice("STL", error));
       return;
     }
-    void downloadTextFile(projectExportFileName(projectName, "obj"), toObj(meshes), "text/plain")
+    void downloadTextFile(projectExportFileName(exportName, "obj"), toObj(meshes), "text/plain")
       .then((result) => finishNotice("OBJ", result))
       .catch((error: unknown) => failNotice("OBJ", error));
   }, [hasSelection, projectName, selectedShapes, shapes]);
 
-  const exportStepDesign = useCallback(async () => {
+  const exportStepDesign = useCallback(async (exportName: string) => {
     if (stepExporting) {
       return;
     }
@@ -7636,7 +7748,7 @@ export function SketchForgeEditor({
       const { exportShapesToStep } = await import("@/lib/stepExport");
       const { blob, exportedCount, skipped } = await exportShapesToStep(sourceShapes);
       const text = await blob.text();
-      const result = await downloadTextFile(projectExportFileName(projectName, "step"), text, "application/step");
+      const result = await downloadTextFile(projectExportFileName(exportName, "step"), text, "application/step");
       const skipNote = skipped.length > 0 ? `; skipped ${skipped.length} non-primitive shape${skipped.length === 1 ? "" : "s"}` : "";
       if (result.mode === "folder") {
         setNotice(`Saved STEP (${exportedCount} bod${exportedCount === 1 ? "y" : "ies"}) to ${result.path}${skipNote}`);
@@ -7649,6 +7761,39 @@ export function SketchForgeEditor({
       setStepExporting(false);
     }
   }, [hasSelection, projectName, selectedShapes, shapes, stepExporting]);
+
+  const exportSkfDesign = useCallback(async (exportName: string, historyLimit: SkfHistoryLimit) => {
+    if (skfExporting) return;
+    if (projectInteractionActiveRef.current) {
+      setNotice("Finish the current drag or transform before saving the project file");
+      return;
+    }
+    setSkfExporting(true);
+    setNotice("Packaging editable project, history, and deduplicated assets…");
+    try {
+      const exportedHistory = editorHistoryForExport(historyRef.current, historyIndexRef.current, historyLimit);
+      const bytes = await exportSkfProject({
+        projectId: projectInfoRef.current.projectId,
+        projectName: exportName.trim() || projectName,
+        createdAt: projectCreatedAt,
+        modifiedAt: projectModifiedAt,
+        shapes: shapesRef.current,
+        history: exportedHistory.entries,
+        historyIndex: exportedHistory.index,
+        assets: projectAssetsRef.current,
+        workspace: workspaceSettingsRef.current,
+        snapGrid,
+        placementElevation,
+      });
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      const result = await downloadBlobFile(projectExportFileName(exportName, "skf"), new Blob([buffer], { type: SKF_MEDIA_TYPE }));
+      setNotice(result.mode === "folder" ? `Saved editable SketchForge project to ${result.path}` : "Saved editable SketchForge project (.skf)");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not save SketchForge project");
+    } finally {
+      setSkfExporting(false);
+    }
+  }, [placementElevation, projectCreatedAt, projectModifiedAt, projectName, skfExporting, snapGrid]);
 
   const clearDesign = useCallback(() => {
     commitShapes([], [], "New empty design");
@@ -7701,45 +7846,107 @@ export function SketchForgeEditor({
     setMenuOpen(false);
   }, [commitShapes, shapes]);
 
-  const selectFile = useCallback(async (file: File) => {
-    const isStep = /\.(step|stp)$/i.test(file.name);
-    const isSvg = /\.svg$/i.test(file.name) || file.type === "image/svg+xml";
-    if (!isStep && !isSvg && !importExtensionSupported(file.name)) {
-      setNotice("Unsupported file type. Use STL, STEP, or SVG.");
+  const importFiles = useCallback(async (files: File[]) => {
+    if (!files.length) return;
+    const projectFiles = files.filter((file) => /\.skf$/i.test(file.name));
+    if (projectFiles.length) {
+      if (files.length !== 1) {
+        setNotice("Open one .skf project at a time; import STL, STEP, and SVG geometry separately");
+        return;
+      }
+      if (!onOpenSkfProjectFile) {
+        setNotice("Opening SketchForge project files is unavailable here");
+        return;
+      }
+      setNotice(`Validating ${projectFiles[0].name} before opening it as a new project`);
+      const result = await onOpenSkfProjectFile(projectFiles[0]);
+      if (result?.message) setNotice(result.message);
+      if (result?.ok !== false) setTopPanel(null);
+      return;
+    }
+    const sourceProjectId = projectInfoRef.current.projectId;
+    const importedShapes: WorkplaneShape[] = [];
+    const importedAssets: ProjectAsset[] = [];
+    const failures: Array<{ fileName: string; reason: string }> = [];
+
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      if (projectInfoRef.current.projectId !== sourceProjectId) {
+        setNotice(`Import of ${files.length} files cancelled because the project changed`);
+        return;
+      }
+
+      const sourceFormat = sourceFormatForFileName(file.name) ?? (file.type === "image/svg+xml" ? "svg" : null);
+      const isStep = sourceFormat === "step";
+      const isSvg = sourceFormat === "svg";
+      if (!sourceFormat || sourceFormat === "obj" || (!isStep && !isSvg && !importExtensionSupported(file.name))) {
+        failures.push({ fileName: file.name, reason: "Unsupported file type" });
+        continue;
+      }
+
+      setNotice(`Importing ${index + 1} of ${files.length}: ${file.name}${isStep ? "… first STEP import loads the OpenCascade kernel (~22 MB)" : ""}`);
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+        let nextShape: WorkplaneShape;
+        if (isStep) {
+          const { importedShapeFromStep } = await import("@/lib/stepImport");
+          nextShape = await importedShapeFromStep(file.name, buffer);
+        } else if (isSvg) {
+          nextShape = importedShapeFromSvg(file.name, new TextDecoder().decode(bytes));
+        } else {
+          nextShape = importedShapeFromStl(file.name, buffer);
+        }
+        const asset = await projectAssetFromBytes(file.name, sourceFormat, bytes, file.type);
+        importedShapes.push(attachProjectAsset(nextShape, asset.id));
+        importedAssets.push(asset);
+      } catch (error) {
+        failures.push({
+          fileName: file.name,
+          reason: error instanceof Error ? error.message : "Could not read file",
+        });
+      }
+    }
+
+    if (projectInfoRef.current.projectId !== sourceProjectId) {
+      setNotice(`Import of ${files.length} files cancelled because the project changed`);
       return;
     }
 
-    const sourceProjectId = projectInfoRef.current.projectId;
-    try {
-      let nextShape: WorkplaneShape;
-      if (isStep) {
-        setNotice("Reading STEP… first import loads the OpenCascade kernel (~22 MB), one time per session");
-        const { importedShapeFromStep } = await import("@/lib/stepImport");
-        nextShape = await importedShapeFromStep(file.name, await file.arrayBuffer());
-      } else if (isSvg) {
-        nextShape = importedShapeFromSvg(file.name, await file.text());
-      } else {
-        nextShape = importedShapeFromStl(file.name, await file.arrayBuffer());
-      }
-      if (projectInfoRef.current.projectId !== sourceProjectId) {
-        setNotice(`Import of ${file.name} cancelled because the project changed`);
-        return;
-      }
-      commitShapes([...shapesRef.current, nextShape], nextShape.id, `Imported ${file.name}`);
-      setTopPanel(null);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : `Could not import ${file.name}`);
+    const failureDetails = failures
+      .slice(0, 3)
+      .map((failure) => `${failure.fileName}: ${failure.reason}`)
+      .join("; ");
+    const remainingFailureCount = Math.max(0, failures.length - 3);
+    const failureSummary = failures.length
+      ? ` Failed: ${failureDetails}${remainingFailureCount ? `; plus ${remainingFailureCount} more` : ""}`
+      : "";
+
+    if (!importedShapes.length) {
+      setNotice(files.length === 1 && failures[0] ? failures[0].reason : `Could not import any of the ${files.length} selected files.${failureSummary}`);
+      return;
     }
-  }, [commitShapes]);
+
+    const successSummary = importedShapes.length === 1 && files.length === 1
+      ? `Imported ${files[0].name}`
+      : `Imported ${importedShapes.length} of ${files.length} files`;
+    const nextAssets = dedupeProjectAssets([...projectAssetsRef.current, ...importedAssets]);
+    projectAssetsRef.current = nextAssets;
+    setProjectAssets(nextAssets);
+    commitShapes(
+      [...shapesRef.current, ...importedShapes],
+      importedShapes.map((shape) => shape.id),
+      `${successSummary}.${failureSummary}`.trim(),
+    );
+    setTopPanel(null);
+  }, [commitShapes, onOpenSkfProjectFile]);
 
   const selectFiles = useCallback(
     (files: FileList | File[]) => {
-      const file = Array.from(files)[0];
-      if (file) {
-        void selectFile(file);
-      }
+      const selectedFiles = Array.from(files);
+      if (selectedFiles.length) void importFiles(selectedFiles);
     },
-    [selectFile],
+    [importFiles],
   );
 
   const selectShape = useCallback((id: string | string[] | null, mode: "replace" | "toggle" = "replace") => {
@@ -8178,14 +8385,18 @@ export function SketchForgeEditor({
       {topPanel ? (
         <TopActionPanel
           panel={topPanel}
+          projectName={projectName}
           shapeCount={exportableShapeCount}
           scopeLabel={exportScopeLabel}
           onClose={() => setTopPanel(null)}
           onExport={exportDesign}
+          onExportSkf={exportSkfDesign}
           onExportStep={exportStepDesign}
+          skfExporting={skfExporting}
           stepExporting={stepExporting}
           onImportFiles={selectFiles}
           onPickFile={() => fileInputRef.current?.click()}
+          onPickProjectFile={() => projectFileInputRef.current?.click()}
           onNotice={setNotice}
         />
       ) : null}
@@ -8201,9 +8412,21 @@ export function SketchForgeEditor({
         }}
       />
       <input
+        ref={projectFileInputRef}
+        className="hidden-file-input"
+        type="file"
+        accept=".skf"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          if (file) selectFiles([file]);
+          event.currentTarget.value = "";
+        }}
+      />
+      <input
         ref={fileInputRef}
         className="hidden-file-input"
         type="file"
+        multiple
         accept=".stl,.step,.stp,.svg,image/svg+xml"
         onChange={(event) => {
           if (event.currentTarget.files) {
@@ -8668,27 +8891,40 @@ function SecondaryToolbar({
 
 function TopActionPanel({
   panel,
+  projectName,
   shapeCount,
   scopeLabel,
   onClose,
   onExport,
+  onExportSkf,
   onExportStep,
+  skfExporting,
   stepExporting,
   onImportFiles,
   onPickFile,
+  onPickProjectFile,
   onNotice,
 }: {
   panel: Exclude<TopPanel, null>;
+  projectName: string;
   shapeCount: number;
   scopeLabel: "selected" | "total";
   onClose: () => void;
-  onExport: (format: ExportFormat) => void;
-  onExportStep: () => void;
+  onExport: (format: DirectExportFormat, exportName: string) => void;
+  onExportSkf: (exportName: string, historyLimit: SkfHistoryLimit) => void;
+  onExportStep: (exportName: string) => void;
+  skfExporting: boolean;
   stepExporting: boolean;
   onImportFiles: (files: FileList | File[]) => void;
   onPickFile: () => void;
+  onPickProjectFile: () => void;
   onNotice: (message: string) => void;
 }) {
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("stl");
+  const [exportName, setExportName] = useState(projectName);
+  const [skfHistoryLimit, setSkfHistoryLimit] = useState<SkfHistoryLimit>("unlimited");
+  const skfHistoryLimits: readonly SkfHistoryLimit[] = ["unlimited", 100, 50, 30];
+  const skfHistoryLimitIndex = skfHistoryLimits.indexOf(skfHistoryLimit);
   const title =
     panel === "profile"
       ? "Profile"
@@ -8700,16 +8936,64 @@ function TopActionPanel({
             ? "Export"
             : "Import";
 
+  const exportDetails: Record<ExportFormat, { label: string; description: string; note: string }> = {
+    stl: {
+      label: "STL",
+      description: "3D print mesh",
+      note: "Best for slicers and 3D printing. Geometry is exported as a triangulated mesh.",
+    },
+    obj: {
+      label: "OBJ",
+      description: "Universal 3D mesh",
+      note: "A broadly compatible mesh format for modeling, rendering, and interchange.",
+    },
+    step: {
+      label: "STEP",
+      description: "CAD / B-Rep",
+      note: "Keeps supported boxes, cylinders, spheres, and cones as precise CAD geometry.",
+    },
+    svg: {
+      label: "SVG",
+      description: "Top-view vector",
+      note: "Exports a clean top-view silhouette in millimeters, including holes and curved contours.",
+    },
+    skf: {
+      label: "SKF",
+      description: "Editable project",
+      note: "Preserves the editable project, undo/redo history, sketches, groups, CAD data, and imported sources.",
+    },
+  };
+  const selectedExport = exportDetails[exportFormat];
+  const runSelectedExport = () => {
+    if (exportFormat === "step") onExportStep(exportName);
+    else if (exportFormat === "skf") onExportSkf(exportName, skfHistoryLimit);
+    else onExport(exportFormat, exportName);
+  };
+
   return (
-    <div className="top-action-panel" role="dialog" aria-label={title}>
+    <div
+      className={`top-action-panel ${panel === "export" ? "export-action-panel" : panel === "import" ? "import-action-panel" : ""}`}
+      role="dialog"
+      aria-label={title}
+    >
       <header>
-        <strong>{title}</strong>
+        <div className="top-action-heading">
+          <strong>{title}</strong>
+        </div>
         <button aria-label={`Close ${title}`} onClick={onClose}>
           <X size={18} />
         </button>
       </header>
       {panel === "import" ? (
         <div className="top-action-body">
+          <button className="open-skf-project-button" type="button" onClick={onPickProjectFile}>
+            <span className="open-skf-project-icon"><FolderOpen size={18} /></span>
+            <span>
+              <strong>Open SketchForge Project</strong>
+              <small>Restore an editable .skf file as a new local project</small>
+            </span>
+          </button>
+          <div className="import-kind-divider"><span>or add geometry</span></div>
           <button
             className="import-drop-zone"
             onClick={onPickFile}
@@ -8731,21 +9015,99 @@ function TopActionPanel({
         </div>
       ) : null}
       {panel === "export" ? (
-        <div className="top-action-body">
-          <p>{shapeCount} {scopeLabel} solid shape{shapeCount === 1 ? "" : "s"} ready to export.</p>
-          <button onClick={() => onExport("stl")}>
-            <Download size={18} />
-            Download STL
-          </button>
-          <button onClick={() => onExport("obj")}>
-            <ToolbarExportIcon />
-            Download OBJ
-          </button>
-          <button onClick={onExportStep} disabled={stepExporting}>
-            <ToolbarExportIcon />
-            {stepExporting ? "Building STEP…" : "Download STEP (B-Rep)"}
-          </button>
-          <p className="export-step-note">STEP keeps boxes, cylinders, spheres and cones as exact CAD geometry (OpenCascade). Other shapes are skipped.</p>
+        <div className="export-dialog-body">
+          <section className="export-setting-section export-file-section">
+            <label htmlFor="export-file-name">File name</label>
+            <div className="export-file-input-wrap">
+              <input
+                id="export-file-name"
+                className="export-file-input"
+                value={exportName}
+                maxLength={120}
+                spellCheck={false}
+                onChange={(event) => setExportName(event.target.value)}
+                onFocus={(event) => event.currentTarget.select()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (shapeCount > 0 || exportFormat === "skf") && !stepExporting && !skfExporting) runSelectedExport();
+                }}
+              />
+              <span>.{exportFormat}</span>
+            </div>
+          </section>
+
+          <section className="export-setting-section">
+            <div className="export-section-heading">
+              <div>
+                <strong>Format</strong>
+              </div>
+              <span className="export-scope-badge">{exportFormat === "skf" ? "Full project" : `${shapeCount} ${scopeLabel}`}</span>
+            </div>
+            <div className="export-format-slider" data-format={exportFormat} role="radiogroup" aria-label="Export format">
+              {(["stl", "obj", "step", "svg", "skf"] as const).map((format) => (
+                <button
+                  key={format}
+                  type="button"
+                  role="radio"
+                  aria-checked={exportFormat === format}
+                  aria-label={`${exportDetails[format].label}: ${exportDetails[format].description}`}
+                  onClick={() => setExportFormat(format)}
+                >
+                  {exportDetails[format].label}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {exportFormat === "skf" ? (
+            <section className="export-setting-section skf-history-section">
+              <div className="export-section-heading">
+                <div>
+                  <strong>Saved action history</strong>
+                  <span>Choose how many recent undo actions travel with the project</span>
+                </div>
+              </div>
+              <div className="skf-history-range-control" data-limit={String(skfHistoryLimit)}>
+                <input
+                  className="skf-history-range"
+                  type="range"
+                  min={0}
+                  max={skfHistoryLimits.length - 1}
+                  step={1}
+                  value={skfHistoryLimitIndex}
+                  aria-label="Saved SKF action history"
+                  aria-valuetext={skfHistoryLimit === "unlimited" ? "Unlimited" : `${skfHistoryLimit} actions`}
+                  onChange={(event) => setSkfHistoryLimit(skfHistoryLimits[Number(event.currentTarget.value)] ?? "unlimited")}
+                />
+              </div>
+              <div className="skf-history-range-labels" aria-hidden="true">
+                {skfHistoryLimits.map((limit) => (
+                  <span key={limit} className={skfHistoryLimit === limit ? "active" : undefined}>
+                    {limit === "unlimited" ? "Unlimited" : limit}
+                  </span>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          <div className="export-format-summary">
+            <div>
+              <strong>{selectedExport.label}</strong>
+              <span>{selectedExport.description}</span>
+            </div>
+            <p>{selectedExport.note}</p>
+          </div>
+
+          <footer className="export-dialog-footer">
+            <div>
+              <button className="export-primary-button" onClick={runSelectedExport} disabled={(shapeCount === 0 && exportFormat !== "skf") || stepExporting || skfExporting}>
+                <Download />
+                {exportFormat === "skf" ? (skfExporting ? "Saving project…" : "Save SketchForge Project") : null}
+                <span hidden={exportFormat === "skf"}>
+                {stepExporting && exportFormat === "step" ? "Building STEP…" : `Export ${selectedExport.label}`}
+                </span>
+              </button>
+            </div>
+          </footer>
         </div>
       ) : null}
       {panel === "tips" ? (

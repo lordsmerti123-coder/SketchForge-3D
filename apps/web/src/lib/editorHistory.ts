@@ -1,8 +1,9 @@
 import type { WorkplaneShape } from "@/types/sketchforge";
 import { canonicalizeShape, serializeShapesForSync } from "@/lib/workplaneShapes";
 
-export const MAX_EDITOR_HISTORY_ENTRIES = 100;
+export const MAX_EDITOR_HISTORY_ENTRIES = 5000;
 export const MAX_EDITOR_HISTORY_BYTES = 64 * 1024 * 1024;
+export type EditorHistoryExportLimit = "unlimited" | 100 | 50 | 30;
 
 export type EditorHistoryEntry = {
   shapes: WorkplaneShape[];
@@ -104,4 +105,19 @@ export function hydrateEditorHistoryState(
   } catch {
     return { entries: [fallback], index: 0 };
   }
+}
+
+export function editorHistoryForExport(
+  entries: EditorHistoryEntry[],
+  requestedIndex: number,
+  limit: EditorHistoryExportLimit,
+): EditorHistoryState {
+  if (entries.length === 0) return { entries: [], index: 0 };
+  const index = Math.min(Math.max(0, requestedIndex), entries.length - 1);
+  if (limit === "unlimited") return { entries, index };
+  const start = Math.max(0, index - limit);
+  return {
+    entries: entries.slice(start, index + 1),
+    index: index - start,
+  };
 }

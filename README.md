@@ -23,6 +23,8 @@
   </p>
 </div>
 
+SketchForge projects can be saved as native editable `.skf` packages and opened later on another browser or device. Unlike STL/OBJ mesh exports, `.skf` preserves shapes, sketches, groups and boolean operands, exact CAD data where available, imported sources, workspace settings, and undo/redo history. See [the `.skf` project format documentation](docs/SKF_PROJECT_FORMAT.md).
+
 ![SketchForge editor showing a selected box on the workplane](docs/media/sketchforge-editor-v0.6.png)
 
 ## Why SketchForge

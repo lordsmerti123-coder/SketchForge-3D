@@ -27,6 +27,18 @@ export type ShapeAsset = {
   hole?: boolean;
 };
 
+export type ProjectAssetSourceFormat = "stl" | "obj" | "svg" | "step";
+
+export type ProjectAsset = {
+  id: string;
+  name: string;
+  mediaType: string;
+  sourceFormat: ProjectAssetSourceFormat;
+  bytes: Uint8Array;
+  byteLength: number;
+  sha256: string;
+};
+
 export type GridSize = "Off" | "0.1 mm" | "0.25 mm" | "0.5 mm" | "1.0 mm" | "2.0 mm" | "5.0 mm" | "Brick";
 export type MeasurementAccuracy = 1 | 2 | 3;
 
@@ -179,6 +191,9 @@ export type WorkplaneShape = {
     baseHeight: number;
     triangleCount: number;
     sourceFormat: "stl" | "obj" | "svg" | "json" | "step";
+    // Stable reference to the original imported file in the project's shared
+    // asset table. Copies and grouped operands reuse this reference.
+    assetId?: string;
     // Exact OpenCascade B-Rep of the body (single-shape STEP text) in the same
     // local frame as `positions`. Set only for STEP imports; lets the exporter
     // re-emit the original analytic geometry instead of the tessellation.
@@ -203,6 +218,7 @@ export type WorkplaneShape = {
   groupedBaseWidth?: number;
   groupedBaseDepth?: number;
   groupedBaseHeight?: number;
+  groupOperation?: "group" | "intersection";
   locked?: boolean;
   hidden?: boolean;
 };

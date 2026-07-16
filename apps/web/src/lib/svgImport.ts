@@ -18,6 +18,9 @@ type SvgPathStyle = {
   fill?: string;
   fillOpacity?: number;
   opacity?: number;
+  stroke?: string;
+  strokeOpacity?: number;
+  strokeWidth?: number;
   visibility?: string;
 };
 
@@ -54,13 +57,34 @@ function attributeValues(source: string, name: string) {
   return values;
 }
 
+const SVG_DOCUMENT_TYPE_PATTERN = /<!DOCTYPE\b[^>]*>/gi;
+const SVG_11_DOCUMENT_TYPE_PATTERN = /^<!DOCTYPE\s+svg(?:\s+PUBLIC\s+(["'])-\/\/W3C\/\/DTD SVG 1\.1\/\/EN\1\s+(["'])https?:\/\/www\.w3\.org\/Graphics\/SVG\/1\.1\/DTD\/svg11\.dtd\2)?\s*>$/i;
+
+function svgDocumentTypes(source: string) {
+  return source.match(SVG_DOCUMENT_TYPE_PATTERN) ?? [];
+}
+
+export function normalizeSvgDocumentType(source: string) {
+  return source.replace(SVG_DOCUMENT_TYPE_PATTERN, "");
+}
+
 export function validateSvgSourcePreflight(source: string) {
   if (!source.trim()) throw new Error("SVG file is empty");
   if (sourceByteLength(source) > MAX_SVG_BYTES) {
     throw new Error(`SVG is too large. The maximum supported size is ${MAX_SVG_BYTES / 1024 / 1024} MB`);
   }
-  if (/<!DOCTYPE|<!ENTITY/i.test(source)) {
-    throw new Error("SVG document types and entities are not supported");
+  if (/<!ENTITY/i.test(source)) {
+    throw new Error("SVG entities are not supported");
+  }
+
+  const documentTypes = svgDocumentTypes(source);
+  const documentTypeStarts = source.match(/<!DOCTYPE\b/gi)?.length ?? 0;
+  if (documentTypes.length !== documentTypeStarts || documentTypes.some((declaration) => !SVG_11_DOCUMENT_TYPE_PATTERN.test(declaration))) {
+    throw new Error("Only the standard SVG 1.1 document type is supported");
+  }
+
+  if (/\b(?:width|height|viewBox|d)\s*=\s*(["'])[^"']*\bNaN\b[^"']*\1/i.test(source)) {
+    throw new Error("SVG contains invalid NaN geometry. In Tinkercad, make sure the workplane intersects the model before exporting the cross-section");
   }
 
   const xmlElementCount = source.match(/<[a-z][^!?/\s>]*/gi)?.length ?? 0;
@@ -122,6 +146,10 @@ function fillAlpha(fill: string | undefined) {
   return Number.parseFloat(functional);
 }
 
+function strokeAlpha(stroke: string | undefined) {
+  return stroke ? fillAlpha(stroke) : 0;
+}
+
 function elementStyleValue(element: Element, property: string) {
   const style = (element as Element & { style?: CSSStyleDeclaration }).style;
   const fromStyle = style?.getPropertyValue(property);
@@ -143,15 +171,55 @@ function elementOrAncestorSuppressesRendering(element: Element | null | undefine
   return false;
 }
 
-function pathIsFilledAndVisible(path: THREE.ShapePath) {
+function pathStyleAndNode(path: THREE.ShapePath) {
   const userData = (path as THREE.ShapePath & { userData?: { style?: SvgPathStyle; node?: Element } }).userData;
-  const style = userData?.style ?? {};
+  return { style: userData?.style ?? {}, node: userData?.node };
+}
+
+function pathIsVisible(path: THREE.ShapePath) {
+  const { style, node } = pathStyleAndNode(path);
   const visibility = style.visibility?.trim().toLowerCase();
   if (visibility === "hidden" || visibility === "collapse") return false;
   if (numericStyleValue(style.opacity) <= MIN_VISIBLE_ALPHA) return false;
+  return !elementOrAncestorSuppressesRendering(node);
+}
+
+function pathHasVisibleFill(path: THREE.ShapePath) {
+  if (!pathIsVisible(path)) return false;
+  const { style } = pathStyleAndNode(path);
   if (numericStyleValue(style.fillOpacity) <= MIN_VISIBLE_ALPHA) return false;
-  if (fillAlpha(style.fill) <= MIN_VISIBLE_ALPHA) return false;
-  return !elementOrAncestorSuppressesRendering(userData?.node);
+  return fillAlpha(style.fill) > MIN_VISIBLE_ALPHA;
+}
+
+function pathHasVisibleStroke(path: THREE.ShapePath) {
+  if (!pathIsVisible(path)) return false;
+  const { style } = pathStyleAndNode(path);
+  if (numericStyleValue(style.strokeOpacity) <= MIN_VISIBLE_ALPHA) return false;
+  if (numericStyleValue(style.strokeWidth, 0) <= MIN_VISIBLE_ALPHA) return false;
+  return strokeAlpha(style.stroke) > MIN_VISIBLE_ALPHA;
+}
+
+function subPathIsClosed(path: THREE.Path) {
+  const points = path.getPoints(SVG_CURVE_SEGMENTS);
+  if (points.length < 3) return false;
+  if (path.autoClose) return true;
+  const extent = points.reduce((largest, point) => Math.max(largest, Math.abs(point.x), Math.abs(point.y)), 1);
+  const tolerance = extent * 1e-9;
+  return points[0].distanceToSquared(points[points.length - 1]) <= tolerance * tolerance;
+}
+
+function extrusionProfileFromPath(path: THREE.ShapePath) {
+  if (pathHasVisibleFill(path)) return path;
+  if (!pathHasVisibleStroke(path)) return null;
+  const closedSubPaths = path.subPaths.filter(subPathIsClosed);
+  if (!closedSubPaths.length) return null;
+
+  const profile = new THREE.ShapePath();
+  profile.color.copy(path.color);
+  profile.subPaths.push(...closedSubPaths);
+  const userData = (path as THREE.ShapePath & { userData?: { style?: SvgPathStyle; node?: Element } }).userData;
+  (profile as THREE.ShapePath & { userData?: { style?: SvgPathStyle; node?: Element } }).userData = userData;
+  return profile;
 }
 
 function cleanRingPoints(points: THREE.Vector2[]) {
@@ -422,10 +490,15 @@ export function validateClosedSolidTriangleSoup(positions: readonly number[], la
 }
 
 export function buildSvgExtrusionFromPaths(paths: readonly THREE.ShapePath[]) {
-  const visiblePaths = paths.filter(pathIsFilledAndVisible);
-  if (!visiblePaths.length) throw new Error("SVG has no readable visible filled paths");
+  const profilePaths = paths.map(extrusionProfileFromPath).filter((path): path is THREE.ShapePath => Boolean(path));
+  if (!profilePaths.length) {
+    if (paths.some(pathHasVisibleStroke)) {
+      throw new Error("SVG contains only open strokes. Close the paths or convert the strokes to filled outlines before importing");
+    }
+    throw new Error("SVG has no readable visible filled or closed-stroke paths");
+  }
 
-  const sourceShapes = visiblePaths.flatMap((path) => SVGLoader.createShapes(path));
+  const sourceShapes = profilePaths.flatMap((path) => SVGLoader.createShapes(path));
   const shapes = composeNestedRings(sourceShapes);
   const rawPositions: number[] = [];
   const acceptedAnalyses: TriangleSoupAnalysis[] = [];
@@ -485,7 +558,7 @@ export function buildSvgExtrusionFromPaths(paths: readonly THREE.ShapePath[]) {
 
 export function importedShapeFromSvg(fileName: string, source: string): WorkplaneShape {
   validateSvgSourcePreflight(source);
-  const parsed = svgLoader.parse(normalizeSvgUseReferences(source));
+  const parsed = svgLoader.parse(normalizeSvgUseReferences(normalizeSvgDocumentType(source)));
   const parsedXml = parsed.xml as unknown as XMLDocument | Element;
   const root = "documentElement" in parsedXml ? parsedXml.documentElement : parsedXml;
   if (root.localName !== "svg" || root.querySelector("parsererror")) {
