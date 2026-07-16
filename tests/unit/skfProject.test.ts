@@ -80,15 +80,6 @@ describe("SketchForge .skf project packages", () => {
       mirrorX: index === 5,
       sides: index + 3,
       text: kind === "text" ? "Editable" : undefined,
-      screwHole: index === 0 ? {
-        metric: "M3",
-        screwLength: 8,
-        head: "socket",
-        fit: "standard",
-        mount: "clearance",
-        depthMode: "through",
-        depth: 16,
-      } : undefined,
       sketchProfile: kind === "sketch" ? {
         points: [
           { id: "p1", x: 0, z: 0 },
@@ -113,7 +104,6 @@ describe("SketchForge .skf project packages", () => {
     expect(restored.workspace).toEqual(DEFAULT_WORKPLANE_WORKSPACE);
     expect(restored.snapGrid).toBe(DEFAULT_SNAP_GRID);
     expect(restored.placementElevation).toBe(12.5);
-    expect(restored.shapes[0].screwHole?.metric).toBe("M3");
     expect(document.assets.filter((entry) => entry.kind === "derived-mesh")).toHaveLength(0);
   });
 

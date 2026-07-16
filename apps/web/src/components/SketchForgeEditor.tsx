@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, CircleDotDashed, Download, FolderOpen, X } from "lucide-react";
+import { Check, Download, FolderOpen, X } from "lucide-react";
 import type manifoldModule from "manifold-3d";
 import type { ManifoldToplevel } from "manifold-3d";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -47,7 +47,6 @@ import {
 import { WorkplaneViewport } from "./WorkplaneViewport";
 import { SketchWorkspace, type SketchMeasurement, type SketchSelection, type SketchTool } from "./SketchWorkspace";
 import { EdgeModifierPanel } from "./workplane/EdgeModifierPanel";
-import { ScrewHolePanel } from "./workplane/ScrewHolePanel";
 import {
   canonicalizeShape,
   cleanNearZero,
@@ -80,7 +79,6 @@ import { createLocalId } from "@/lib/localIds";
 import { projectExportFileName } from "@/lib/exportNames";
 import { attachProjectAsset, dedupeProjectAssets, projectAssetFromBytes, sourceFormatForFileName } from "@/lib/projectAssets";
 import { exportSkfProject, SKF_MEDIA_TYPE } from "@/lib/skfProject";
-import { createScrewHoleShape, DEFAULT_SCREW_HOLE_CONFIG, type ScrewHoleConfig } from "@/lib/screwHoles";
 import { makeShapeFromAsset, sceneShape, toolbarShapeAssets, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
 import { importedShapeFromSvg, invalidSvgMeshReason } from "@/lib/svgImport";
@@ -5104,11 +5102,6 @@ export function SketchForgeEditor({
   const [workplaneMode, setWorkplaneMode] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [topPanel, setTopPanel] = useState<TopPanel>(null);
-  const [screwHolePanelOpen, setScrewHolePanelOpen] = useState(false);
-  const [screwHoleConfig, setScrewHoleConfig] = useState<ScrewHoleConfig>(DEFAULT_SCREW_HOLE_CONFIG);
-  const [screwHoleTargetId, setScrewHoleTargetId] = useState<string | null>(null);
-  const [screwHolePlacementActive, setScrewHolePlacementActive] = useState(false);
-  const [screwHolePlacedIds, setScrewHolePlacedIds] = useState<string[]>([]);
   const [stepExporting, setStepExporting] = useState(false);
   const [skfExporting, setSkfExporting] = useState(false);
   const [alignMode, setAlignMode] = useState(false);
@@ -5458,19 +5451,6 @@ export function SketchForgeEditor({
   const selectedShapes = useMemo(() => shapes.filter((shape) => selectedIds.includes(shape.id)), [selectedIds, shapes]);
   const selectedShape = selectedShapes.at(-1) ?? null;
   const hasSelection = selectedShapes.length > 0;
-  const selectedScrewHoleTarget = useMemo(
-    () => selectedShapes.length === 1 && selectedShape && !selectedShape.hole && !selectedShape.locked ? selectedShape : null,
-    [selectedShape, selectedShapes.length],
-  );
-  const screwHoleTarget = useMemo(
-    () => screwHoleTargetId ? shapes.find((shape) => shape.id === screwHoleTargetId && !shape.hole && !shape.locked) ?? null : null,
-    [screwHoleTargetId, shapes],
-  );
-  const screwHolePlacement = useMemo(() => {
-    if (!screwHolePlacementActive || !screwHoleTarget) return null;
-    const depth = screwHoleConfig.depthMode === "through" ? Math.max(0.5, screwHoleTarget.height + 0.4) : screwHoleConfig.depth;
-    return { config: { ...screwHoleConfig, depth }, elevation: (screwHoleTarget.elevation ?? 0) + screwHoleTarget.height - depth };
-  }, [screwHoleConfig, screwHolePlacementActive, screwHoleTarget]);
   const modifierAvailableEdgeIds = useMemo(
     () => edgeModifier ? edgeModifier.edges.filter((edge) => selectableCadModifierEdge(edge, edgeModifier.sharpAngle)).map((edge) => edge.id) : [],
     [edgeModifier?.edges, edgeModifier?.sharpAngle],
@@ -6245,71 +6225,6 @@ export function SketchForgeEditor({
     },
     [commitShapes, placementElevation, shapes],
   );
-
-  const openScrewHolePanel = useCallback(() => {
-    if (selectedShape?.screwHole) setScrewHoleConfig(selectedShape.screwHole);
-    setScrewHolePanelOpen(true);
-    setTopPanel(null);
-    setMenuOpen(false);
-    setEdgeModifier(null);
-  }, [selectedShape]);
-
-  const startScrewHolePlacement = useCallback(() => {
-    const target = selectedScrewHoleTarget ?? screwHoleTarget;
-    if (!target) {
-      setNotice("Select one unlocked solid body before placing a screw hole");
-      return;
-    }
-    if (target.id !== screwHoleTargetId) setScrewHolePlacedIds([]);
-    setScrewHoleTargetId(target.id);
-    setScrewHolePlacementActive(true);
-    setWorkplaneMode(false);
-    setAlignMode(false);
-    setMirrorMode(false);
-    setEdgeModifier(null);
-    setNotice(`Screw hole: click ${target.name} to place a cutter; Esc finishes`);
-  }, [screwHoleTarget, screwHoleTargetId, selectedScrewHoleTarget]);
-
-  const finishScrewHolePlacement = useCallback(() => {
-    setScrewHolePlacementActive(false);
-    if (screwHoleTargetId && screwHolePlacedIds.length) {
-      const readyToGroup = [screwHoleTargetId, ...screwHolePlacedIds].filter((id) => shapesRef.current.some((shape) => shape.id === id));
-      selectedIdsRef.current = readyToGroup;
-      setSelectedIds(readyToGroup);
-    }
-    setNotice(screwHolePlacedIds.length ? `${screwHolePlacedIds.length} screw hole${screwHolePlacedIds.length === 1 ? "" : "s"} ready to group` : "Screw hole placement finished");
-  }, [screwHolePlacedIds, screwHoleTargetId]);
-
-  const closeScrewHolePanel = useCallback(() => {
-    setScrewHolePlacementActive(false);
-    setScrewHolePanelOpen(false);
-    setScrewHoleTargetId(null);
-    setScrewHolePlacedIds([]);
-  }, []);
-
-  const placeScrewHole = useCallback((point: { x: number; z: number }) => {
-    if (!screwHoleTarget || !screwHolePlacement) {
-      setScrewHolePlacementActive(false);
-      setNotice("Screw hole placement stopped because its target is no longer available");
-      return;
-    }
-    const nextHole = createScrewHoleShape(screwHolePlacement.config, { ...point, elevation: screwHolePlacement.elevation });
-    commitShapes([...shapes, nextHole], nextHole.id, `Placed ${nextHole.name}`);
-    setScrewHolePlacedIds((current) => [...current, nextHole.id]);
-    setNotice(`Screw hole placed on ${screwHoleTarget.name}; its Hole mode is selected for editing`);
-  }, [commitShapes, screwHolePlacement, screwHoleTarget, shapes]);
-
-  useEffect(() => {
-    if (!screwHolePlacementActive) return;
-    const finishOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        finishScrewHolePlacement();
-      }
-    };
-    window.addEventListener("keydown", finishOnEscape);
-    return () => window.removeEventListener("keydown", finishOnEscape);
-  }, [finishScrewHolePlacement, screwHolePlacementActive]);
 
   const updateShape = useCallback(
     (id: string, patch: ShapeUpdatePatch) => {
@@ -8329,7 +8244,6 @@ export function SketchForgeEditor({
         onUndo={undo}
         onWorkplaneTool={activateWorkplaneTool}
         workplaneMode={workplaneMode}
-        onOpenScrewHole={openScrewHolePanel}
         onTopPanel={(panel) => {
           setTopPanel(panel);
           setMenuOpen(false);
@@ -8391,12 +8305,10 @@ export function SketchForgeEditor({
           mirrorReferenceShapes={shapes}
           placementElevation={placementElevation}
           workplaneMode={workplaneMode}
-          screwHolePlacement={screwHolePlacement}
           initialSnap={initialSnap}
           initialWorkspace={initialWorkspace}
           workspaceSettingsKey={projectId ?? "local-workplane"}
           onAddShape={addShape}
-          onPlaceScrewHole={placeScrewHole}
           onAlignAnchorChange={chooseAlignAnchor}
           onAlignPreview={previewAlignSelection}
           onAlignPreviewClear={clearAlignPreview}
@@ -8468,18 +8380,6 @@ export function SketchForgeEditor({
           onRemoveFeature={removeEdgeTreatment}
           onApply={applyEdgeModifier}
           onCancel={cancelEdgeModifier}
-        />
-      ) : null}
-      {screwHolePanelOpen ? (
-        <ScrewHolePanel
-          config={screwHoleConfig}
-          targetName={(screwHoleTarget ?? selectedScrewHoleTarget)?.name ?? null}
-          placing={screwHolePlacementActive}
-          dockBesideInspector={Boolean(selectedShape)}
-          onChange={(patch) => setScrewHoleConfig((current) => ({ ...current, ...patch }))}
-          onStartPlacement={startScrewHolePlacement}
-          onFinishPlacement={finishScrewHolePlacement}
-          onClose={closeScrewHolePanel}
         />
       ) : null}
       {topPanel ? (
@@ -8624,7 +8524,6 @@ function SecondaryToolbar({
   onUndo,
   onWorkplaneTool,
   workplaneMode,
-  onOpenScrewHole,
   onTopPanel,
   onAddShape,
 }: {
@@ -8675,7 +8574,6 @@ function SecondaryToolbar({
   onUndo: () => void;
   onWorkplaneTool: () => void;
   workplaneMode: boolean;
-  onOpenScrewHole: () => void;
   onTopPanel: (panel: TopPanel) => void;
   onAddShape: (shape: ShapeAsset) => void;
 }) {
@@ -8689,10 +8587,6 @@ function SecondaryToolbar({
   };
   const addShapeFromMenu = (shape: ShapeAsset) => {
     onAddShape(shape);
-    setShapesOpen(false);
-  };
-  const openScrewHoleFromMenu = () => {
-    onOpenScrewHole();
     setShapesOpen(false);
   };
   const leftTools = [
@@ -8838,15 +8732,6 @@ function SecondaryToolbar({
                     <span>{shape.name}</span>
                   </button>
                 ))}
-                <div className="shape-menu-divider" />
-                <div className="shape-menu-title special">Manufacturing</div>
-                <button className="shape-menu-item screw-hole-menu-item" type="button" onClick={openScrewHoleFromMenu}>
-                  <span className="screw-hole-menu-icon"><CircleDotDashed size={31} strokeWidth={1.9} /></span>
-                  <span>
-                    <strong>Screw hole</strong>
-                    <small>Metric fastener cutter</small>
-                  </span>
-                </button>
               </div>
             </div>
           ) : null}
