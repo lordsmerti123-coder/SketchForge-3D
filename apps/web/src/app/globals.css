@@ -1274,6 +1274,105 @@ button {
   to { transform: rotate(360deg); }
 }
 
+.screw-hole-panel {
+  position: fixed;
+  top: calc(var(--editor-toolbar-height) + 14px);
+  right: 14px;
+  z-index: 46;
+  width: min(340px, calc(100vw - 28px));
+  padding: 14px;
+  color: #274158;
+  background: rgba(250, 252, 254, 0.98);
+  border: 1px solid #c8d6e1;
+  border-radius: 12px;
+  box-shadow: 0 14px 38px rgba(30, 55, 74, 0.2);
+  backdrop-filter: blur(12px);
+}
+
+.screw-hole-panel.beside-inspector {
+  right: calc(min(320px, calc(100vw - 18px)) + 14px);
+}
+
+.screw-hole-panel-header,
+.screw-hole-actions,
+.screw-hole-summary,
+.screw-hole-note {
+  display: flex;
+  align-items: center;
+}
+
+.screw-hole-panel-header {
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid #dce5ec;
+}
+
+.screw-hole-panel-header strong,
+.screw-hole-panel-header span { display: block; }
+.screw-hole-panel-header strong { font-size: 16px; }
+.screw-hole-panel-header span,
+.screw-hole-footer { color: #6b7f90; font-size: 11px; }
+
+.screw-hole-panel-header button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  color: #526b7e;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.screw-hole-panel-header button:hover { background: #e8eff4; }
+
+.screw-hole-summary {
+  gap: 9px;
+  margin-top: 11px;
+  padding: 9px 10px;
+  color: #17688a;
+  background: #eaf7fb;
+  border: 1px solid #b8ddea;
+  border-radius: 8px;
+}
+
+.screw-hole-summary > span { display: grid; min-width: 0; gap: 2px; }
+.screw-hole-summary strong,
+.screw-hole-summary small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.screw-hole-summary strong { font-size: 12px; }
+.screw-hole-summary small { color: #57819a; font-size: 10px; font-weight: 700; }
+
+.screw-hole-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 9px;
+  margin-top: 13px;
+}
+
+.screw-hole-fields label { display: grid; gap: 5px; min-width: 0; color: #415a6e; font-size: 11px; font-weight: 750; }
+.screw-hole-fields select,
+.screw-hole-number { width: 100%; height: 32px; color: #263f53; background: white; border: 1px solid #bdcdda; border-radius: 6px; }
+.screw-hole-fields select,
+.screw-hole-number input { padding: 0 7px; font: inherit; }
+.screw-hole-number { display: flex; align-items: center; overflow: hidden; }
+.screw-hole-number input { width: 100%; min-width: 0; height: 100%; color: inherit; background: transparent; border: 0; }
+.screw-hole-number small { padding-right: 8px; color: #718597; font-size: 10px; font-weight: 800; }
+
+.screw-hole-note { gap: 7px; margin-top: 12px; padding: 8px 9px; color: #607486; background: #f3f7fa; border: 1px solid #dbe6ed; border-radius: 7px; font-size: 10px; line-height: 1.35; }
+.screw-hole-note svg { flex: 0 0 auto; color: #0d8dbc; }
+.screw-hole-target { display: grid; gap: 2px; margin-top: 12px; padding: 8px 10px; color: #7a8996; background: #f4f6f8; border: 1px dashed #c7d3dc; border-radius: 7px; }
+.screw-hole-target.ready { color: #17688a; background: #edf8fb; border-style: solid; border-color: #b8ddea; }
+.screw-hole-target span { font-size: 10px; font-weight: 800; text-transform: uppercase; }
+.screw-hole-target strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.screw-hole-actions { justify-content: flex-end; gap: 8px; margin-top: 13px; }
+.screw-hole-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 33px; padding: 0 11px; border: 1px solid #b7c8d5; border-radius: 7px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 800; }
+.screw-hole-actions .primary { color: white; background: #119dcc; border-color: #0787b3; }
+.screw-hole-actions .secondary { color: #3d596e; background: white; }
+.screw-hole-actions button:disabled { opacity: 0.48; cursor: default; }
+.screw-hole-footer { margin: 10px 1px 0; line-height: 1.35; }
+
 .toolbar-mode-content {
   position: absolute;
   top: calc(var(--editor-toolbar-height) - var(--editor-toolbar-tools-height));
@@ -1783,6 +1882,9 @@ button {
   border-bottom: 1px solid #dbe5ed;
 }
 
+.shape-menu-divider { height: 1px; margin: 5px 2px 1px; background: #dbe5ed; }
+.shape-menu-title.special { height: auto; padding: 4px 6px 1px; color: #597084; font-size: 11px; line-height: 1.2; background: transparent; border: 0; text-transform: uppercase; }
+
 .shape-menu-list {
   display: flex;
   max-height: min(608px, calc(100vh - 136px));
@@ -1816,6 +1918,15 @@ button {
   box-shadow: 0 4px 12px rgba(28, 48, 68, 0.13);
   transform: translateY(-1px);
 }
+
+.shape-menu-item.screw-hole-menu-item { min-height: 62px; color: #17688a; background: #edf8fb; border-color: #bee0eb; }
+.shape-menu-item.screw-hole-menu-item:hover { color: #0f5977; background: #e3f5fa; border-color: #8ccadd; }
+.screw-hole-menu-icon { display: grid; width: 48px; height: 48px; flex: 0 0 auto; place-items: center; color: #0d94c0; background: white; border: 1px solid #b5dce8; border-radius: 50%; }
+.shape-menu-item.screw-hole-menu-item > span:last-child { display: grid; gap: 2px; max-width: 150px; }
+.shape-menu-item.screw-hole-menu-item strong,
+.shape-menu-item.screw-hole-menu-item small { overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.shape-menu-item.screw-hole-menu-item strong { font-size: 14px; }
+.shape-menu-item.screw-hole-menu-item small { color: #568198; font-size: 10px; font-weight: 700; }
 
 .shape-menu-item img {
   flex: 0 0 auto;
@@ -3317,7 +3428,9 @@ button {
 }
 
 .workplane-wrap.placing-workplane .three-workplane-host,
-.workplane-wrap.placing-workplane .three-workplane-host:active {
+.workplane-wrap.placing-workplane .three-workplane-host:active,
+.workplane-wrap.screw-hole-placement .three-workplane-host,
+.workplane-wrap.screw-hole-placement .three-workplane-host:active {
   cursor: crosshair;
 }
 
