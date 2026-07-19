@@ -117,7 +117,11 @@ docker compose -f deploy/docker/compose-ghcr.yaml up -d
 #### Standalone (Prebuilt)
 
 ```bash
-docker run -d --name sketchforge --restart unless-stopped -p 3000:80 ghcr.io/formsmith746/sketchforge-3d:latest
+docker run -d --name sketchforge --restart unless-stopped \
+  -p 3000:3000 \
+  -e SKETCHFORGE_SHARED_PROJECTS_DIR=/data/projects \
+  -v sketchforge-shared-projects:/data/projects \
+  ghcr.io/formsmith746/sketchforge-3d:latest
 ```
 
 After running, open this on the same computer:
@@ -127,6 +131,27 @@ http://127.0.0.1:3000/
 ```
 
 If that works, SketchForge is running.
+
+### Shared Docker Projects
+
+Docker deployments include a shared `.skf` project library. Private projects still autosave in each user's browser. The **Shared** dashboard section lists files stored in `/data/projects`, and **Export → SKF → Save to shared** writes the current project there.
+
+Compose uses the persistent `sketchforge-shared-projects` volume by default. To use a directory on the Docker host instead, set `SKETCHFORGE_SHARED_PROJECTS_VOLUME` before starting Compose:
+
+Windows PowerShell:
+
+```powershell
+$env:SKETCHFORGE_SHARED_PROJECTS_VOLUME = "C:/SketchForge/shared-projects"
+docker compose -f deploy/docker/compose.yaml up --build -d
+```
+
+Linux or macOS:
+
+```bash
+SKETCHFORGE_SHARED_PROJECTS_VOLUME=/srv/sketchforge-projects docker compose -f deploy/docker/compose.yaml up --build -d
+```
+
+Opening a shared file creates a private local working copy. Saving back checks the server revision first; if another user has changed the file, SketchForge refuses to overwrite it and asks the user to reload or save with another name. This is shared file storage, not simultaneous live editing.
 
 ### Let Other Computers Join
 

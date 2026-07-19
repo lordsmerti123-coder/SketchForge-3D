@@ -5,6 +5,7 @@ import {
   CAD_MODIFIER_RUNTIME_BASE,
   cadModifierTimeoutMessage,
   edgeModifierSelectionStatus,
+  isCadModifierWasmMemoryFault,
 } from "@/lib/cadModifierRuntime";
 
 describe("CAD modifier runtime state", () => {
@@ -26,5 +27,12 @@ describe("CAD modifier runtime state", () => {
 
   it("does not expose thresholds above the worker's folded edge-angle range", () => {
     expect(CAD_MODIFIER_MAX_SHARP_ANGLE).toBe(90);
+  });
+
+  it("recognizes browser-specific WebAssembly memory fault messages", () => {
+    expect(isCadModifierWasmMemoryFault("toBREP: memory access out of bounds")).toBe(true);
+    expect(isCadModifierWasmMemoryFault("toBREP: Out of bounds memory access (evaluating 'func(...args)')")).toBe(true);
+    expect(isCadModifierWasmMemoryFault("Unreachable code reached", "RuntimeError")).toBe(true);
+    expect(isCadModifierWasmMemoryFault("The selected edges cannot be filleted together", "Error")).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Download, FolderOpen, X } from "lucide-react";
+import { Check, CloudUpload, Download, FolderOpen, X } from "lucide-react";
 import type manifoldModule from "manifold-3d";
 import type { ManifoldToplevel } from "manifold-3d";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -52,6 +52,7 @@ import {
   cleanNearZero,
   cleanRotationDegrees,
   fallbackSolidColor,
+  meshYawDegrees,
   mirroredAxisCount,
   mirrorSign,
   normalizeDegrees,
@@ -78,6 +79,7 @@ import { snapShapeFootprintToVisibleGrid, visibleGridStep } from "@/lib/gridSnap
 import { createLocalId } from "@/lib/localIds";
 import { projectExportFileName } from "@/lib/exportNames";
 import { attachProjectAsset, dedupeProjectAssets, projectAssetFromBytes, sourceFormatForFileName } from "@/lib/projectAssets";
+import { findSketchOutlineIntersection } from "@/lib/sketchProfileValidation";
 import { exportSkfProject, SKF_MEDIA_TYPE } from "@/lib/skfProject";
 import { makeShapeFromAsset, sceneShape, toolbarShapeAssets, type ToolbarShapeAsset } from "@/lib/shapeCatalog";
 import { importedShapeFromStl, importExtensionSupported } from "@/lib/stlImport";
@@ -101,6 +103,7 @@ type TopPanel = "import" | "export" | "tips" | "profile" | "settings" | null;
 type ExportFormat = "stl" | "obj" | "step" | "svg" | "skf";
 type DirectExportFormat = Exclude<ExportFormat, "step" | "skf">;
 type SkfHistoryLimit = EditorHistoryExportLimit;
+type SkfExportTarget = "download" | "shared";
 type ToolbarMode = "geometry" | "sketch";
 type Vec3 = [number, number, number];
 type MeshData = { name: string; vertices: Vec3[]; faces: [number, number, number][] };
@@ -311,7 +314,89 @@ function pointInSketchPolygon(point: THREE.Vector2, polygon: THREE.Vector2[]) {
   return inside;
 }
 
-function shapeFromSketchProfile(profile: SketchProfile, height: number, existing?: WorkplaneShape | null) {
+async function shapeFromResolvedSketchProfile(
+  profile: SketchProfile,
+  polygons: Array<Array<[number, number]>>,
+  height: number,
+  centerX: number,
+  centerZ: number,
+  existing?: WorkplaneShape | null,
+) {
+  const runtime = await getManifoldRuntime();
+  const disposable: unknown[] = [];
+  try {
+    const section = new runtime.CrossSection(polygons, "EvenOdd");
+    disposable.push(section);
+    const coordinateScale = polygons.reduce(
+      (largest, polygon) => polygon.reduce((polygonLargest, point) => Math.max(polygonLargest, Math.abs(point[0]), Math.abs(point[1])), largest),
+      1,
+    );
+    const simplified = section.simplify(Math.max(1e-7, coordinateScale * 1e-8));
+    disposable.push(simplified);
+    if (simplified.toPolygons().length === 0) throw new Error("The sketch has no filled area after resolving its crossings");
+
+    const solid = simplified.extrude(height);
+    disposable.push(solid);
+    if (solid.status() !== "NoError" || solid.numTri() < 1) {
+      throw new Error("The crossing sketch could not be converted into a valid solid");
+    }
+
+    const manifoldPositions = manifoldMeshToPositions(solid.getMesh());
+    const positions = new Array<number>(manifoldPositions.length);
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minZ = Number.POSITIVE_INFINITY;
+    let maxZ = Number.NEGATIVE_INFINITY;
+    for (let index = 0; index + 2 < manifoldPositions.length; index += 3) {
+      const x = manifoldPositions[index];
+      const y = manifoldPositions[index + 2];
+      const z = -manifoldPositions[index + 1];
+      positions[index] = x;
+      positions[index + 1] = y;
+      positions[index + 2] = z;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minZ = Math.min(minZ, z);
+      maxZ = Math.max(maxZ, z);
+    }
+    const localCenterX = (minX + maxX) / 2;
+    const localCenterZ = (minZ + maxZ) / 2;
+    for (let index = 0; index + 2 < positions.length; index += 3) {
+      positions[index] -= localCenterX;
+      positions[index + 2] -= localCenterZ;
+    }
+    const meshWidth = Math.max(0.01, maxX - minX);
+    const meshDepth = Math.max(0.01, maxZ - minZ);
+    return canonicalizeShape({
+      id: existing?.id ?? createLocalId("sketch-extrusion"),
+      name: existing?.name ?? "Sketch extrusion",
+      kind: "mesh",
+      color: existing?.color ?? "#d41721",
+      hole: existing?.hole,
+      x: centerX + localCenterX,
+      z: centerZ + localCenterZ,
+      elevation: 0,
+      size: Math.max(meshWidth, meshDepth),
+      width: meshWidth,
+      depth: meshDepth,
+      height,
+      rotation: 0,
+      importedMesh: {
+        positions,
+        baseWidth: meshWidth,
+        baseDepth: meshDepth,
+        baseHeight: height,
+        triangleCount: Math.floor(positions.length / 9),
+        sourceFormat: "json",
+      },
+      sketchProfile: cloneSketchProfile(profile),
+    } satisfies WorkplaneShape);
+  } finally {
+    [...new Set(disposable)].reverse().forEach(disposeManifold);
+  }
+}
+
+async function shapeFromSketchProfile(profile: SketchProfile, height: number, existing?: WorkplaneShape | null) {
   const closedPaths = orderedSketchPaths(profile).filter((path) => path.closed);
   if (closedPaths.length === 0) return null;
   const profilePoints = closedPaths.flatMap((path) => path.points);
@@ -349,6 +434,25 @@ function shapeFromSketchProfile(profile: SketchProfile, height: number, existing
     const polygon = outline.extractPoints(16).shape;
     return { outline, polygon, area: Math.abs(THREE.ShapeUtils.area(polygon)) };
   });
+  const hasCurves = profile.segments.some((segment) => segment.kind === "bezier" || segment.kind === "smooth");
+  const longestHandle = profile.points.reduce((longest, point) => Math.max(
+    longest,
+    point.handleIn ? Math.hypot(point.handleIn.x - point.x, point.handleIn.z - point.z) : 0,
+    point.handleOut ? Math.hypot(point.handleOut.x - point.x, point.handleOut.z - point.z) : 0,
+  ), 0);
+  const curveScale = Math.max(width, depth, longestHandle * 2);
+  const curveSegments = hasCurves ? Math.min(256, Math.max(32, Math.ceil(curveScale * 1.25))) : 1;
+  const sampledPolygons = outlineRecords.map((record) => record.outline.extractPoints(curveSegments).shape);
+  if (findSketchOutlineIntersection(sampledPolygons)) {
+    return shapeFromResolvedSketchProfile(
+      profile,
+      sampledPolygons.map((polygon) => polygon.map((point) => [point.x, point.y] as [number, number])),
+      safeHeight,
+      centerX,
+      centerZ,
+      existing,
+    );
+  }
   const sortedOutlines = [...outlineRecords].sort((a, b) => b.area - a.area);
   const outlines: THREE.Shape[] = [];
   sortedOutlines.forEach((record) => {
@@ -361,14 +465,6 @@ function shapeFromSketchProfile(profile: SketchProfile, height: number, existing
     if (parent) parent.outline.holes.push(record.outline);
     else outlines.push(record.outline);
   });
-  const hasCurves = profile.segments.some((segment) => segment.kind === "bezier" || segment.kind === "smooth");
-  const longestHandle = profile.points.reduce((longest, point) => Math.max(
-    longest,
-    point.handleIn ? Math.hypot(point.handleIn.x - point.x, point.handleIn.z - point.z) : 0,
-    point.handleOut ? Math.hypot(point.handleOut.x - point.x, point.handleOut.z - point.z) : 0,
-  ), 0);
-  const curveScale = Math.max(width, depth, longestHandle * 2);
-  const curveSegments = hasCurves ? Math.min(256, Math.max(32, Math.ceil(curveScale * 1.25))) : 1;
   const geometry = new THREE.ExtrudeGeometry(outlines, { depth: safeHeight, bevelEnabled: false, steps: 1, curveSegments });
   geometry.rotateX(-Math.PI / 2);
   geometry.computeVertexNormals();
@@ -414,14 +510,6 @@ function shapeFromSketchProfile(profile: SketchProfile, height: number, existing
 
 function cleanModelDimension(value: number) {
   return Math.max(MIN_SHAPE_DIMENSION, Number(value.toFixed(MODEL_DIMENSION_PRECISION)));
-}
-
-function meshYawDegrees(shape: WorkplaneShape) {
-  const isRoundPrimitive = !shape.importedMesh && (shape.kind === "cylinder" || shape.kind === "cone");
-  const isCircular = Math.abs(shapeWidth(shape) - shapeDepth(shape)) < 0.0005;
-  // A circular cylinder/cone is invariant around Y. Ignoring that purely visual
-  // yaw keeps its tessellated export at the requested diameter after grouping.
-  return isRoundPrimitive && isCircular ? 0 : shape.rotation;
 }
 
 function parseClipboardShapes(serialized: string) {
@@ -5048,6 +5136,7 @@ export function SketchForgeEditor({
   initialPlacementElevation = 0,
   onHome,
   onOpenSkfProjectFile,
+  onSaveSharedProject,
   onProjectShapesChange,
   onProjectSnapshot,
   onProjectWorkspaceChange,
@@ -5056,6 +5145,7 @@ export function SketchForgeEditor({
   projectCreatedAt = Date.now(),
   projectModifiedAt = Date.now(),
   projectRevision = 0,
+  sharedProjectsEnabled = false,
 }: {
   initialAssets?: ProjectAsset[];
   initialShapes?: WorkplaneShape[];
@@ -5066,6 +5156,7 @@ export function SketchForgeEditor({
   initialPlacementElevation?: number;
   onHome?: () => void;
   onOpenSkfProjectFile?: (file: File) => Promise<{ ok: boolean; message: string } | void> | { ok: boolean; message: string } | void;
+  onSaveSharedProject?: (request: { exportName: string; bytes: Uint8Array }) => Promise<string>;
   onProjectShapesChange?: (snapshot: {
     projectId: string;
     shapes: WorkplaneShape[];
@@ -5080,6 +5171,7 @@ export function SketchForgeEditor({
   projectCreatedAt?: number;
   projectModifiedAt?: number;
   projectRevision?: number;
+  sharedProjectsEnabled?: boolean;
 } = {}) {
   const initialSceneRef = useRef<WorkplaneShape[] | null>(null);
   if (initialSceneRef.current === null) {
@@ -6133,10 +6225,16 @@ export function SketchForgeEditor({
     setSketchTool("select");
   }, [commitSketchProfile, sketchProfile]);
 
-  const finishSketch = useCallback(() => {
+  const finishSketch = useCallback(async () => {
     const existing = editingSketchShapeId ? shapes.find((shape) => shape.id === editingSketchShapeId) ?? null : null;
     const height = existing?.height ?? 10;
-    const extruded = shapeFromSketchProfile(sketchProfile, height, existing);
+    let extruded: WorkplaneShape | null;
+    try {
+      extruded = await shapeFromSketchProfile(sketchProfile, height, existing);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "The sketch profile cannot be converted to 3D");
+      return;
+    }
     if (!extruded) {
       setNotice("Close at least one profile before finishing the sketch");
       return;
@@ -7162,7 +7260,7 @@ export function SketchForgeEditor({
         let shape: WorkplaneShape;
         if (kind === "sketch") {
           const profile = defaultMcpSketchProfile(width, depth);
-          const extruded = shapeFromSketchProfile(profile, height);
+          const extruded = await shapeFromSketchProfile(profile, height);
           if (!extruded) throw new Error("Could not create the sketch profile");
           shape = canonicalizeShape({
             ...extruded,
@@ -7762,14 +7860,18 @@ export function SketchForgeEditor({
     }
   }, [hasSelection, projectName, selectedShapes, shapes, stepExporting]);
 
-  const exportSkfDesign = useCallback(async (exportName: string, historyLimit: SkfHistoryLimit) => {
+  const exportSkfDesign = useCallback(async (exportName: string, historyLimit: SkfHistoryLimit, target: SkfExportTarget = "download") => {
     if (skfExporting) return;
+    if (target === "shared" && !onSaveSharedProject) {
+      setNotice("Shared project storage is not available in this deployment");
+      return;
+    }
     if (projectInteractionActiveRef.current) {
       setNotice("Finish the current drag or transform before saving the project file");
       return;
     }
     setSkfExporting(true);
-    setNotice("Packaging editable project, history, and deduplicated assets…");
+    setNotice(target === "shared" ? "Packaging project for Docker shared storage…" : "Packaging editable project, history, and deduplicated assets…");
     try {
       const exportedHistory = editorHistoryForExport(historyRef.current, historyIndexRef.current, historyLimit);
       const bytes = await exportSkfProject({
@@ -7785,15 +7887,19 @@ export function SketchForgeEditor({
         snapGrid,
         placementElevation,
       });
-      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-      const result = await downloadBlobFile(projectExportFileName(exportName, "skf"), new Blob([buffer], { type: SKF_MEDIA_TYPE }));
-      setNotice(result.mode === "folder" ? `Saved editable SketchForge project to ${result.path}` : "Saved editable SketchForge project (.skf)");
+      if (target === "shared" && onSaveSharedProject) {
+        setNotice(await onSaveSharedProject({ exportName: exportName.trim() || projectName, bytes }));
+      } else {
+        const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+        const result = await downloadBlobFile(projectExportFileName(exportName, "skf"), new Blob([buffer], { type: SKF_MEDIA_TYPE }));
+        setNotice(result.mode === "folder" ? `Saved editable SketchForge project to ${result.path}` : "Saved editable SketchForge project (.skf)");
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not save SketchForge project");
     } finally {
       setSkfExporting(false);
     }
-  }, [placementElevation, projectCreatedAt, projectModifiedAt, projectName, skfExporting, snapGrid]);
+  }, [onSaveSharedProject, placementElevation, projectCreatedAt, projectModifiedAt, projectName, skfExporting, snapGrid]);
 
   const clearDesign = useCallback(() => {
     commitShapes([], [], "New empty design");
@@ -8245,7 +8351,7 @@ export function SketchForgeEditor({
         onWorkplaneTool={activateWorkplaneTool}
         workplaneMode={workplaneMode}
         onTopPanel={(panel) => {
-          setTopPanel(panel);
+          setTopPanel((current) => (current === panel ? null : panel));
           setMenuOpen(false);
         }}
         onAddShape={(shape) => {
@@ -8392,6 +8498,7 @@ export function SketchForgeEditor({
           onExport={exportDesign}
           onExportSkf={exportSkfDesign}
           onExportStep={exportStepDesign}
+          sharedProjectsEnabled={sharedProjectsEnabled}
           skfExporting={skfExporting}
           stepExporting={stepExporting}
           onImportFiles={selectFiles}
@@ -8898,6 +9005,7 @@ function TopActionPanel({
   onExport,
   onExportSkf,
   onExportStep,
+  sharedProjectsEnabled,
   skfExporting,
   stepExporting,
   onImportFiles,
@@ -8911,8 +9019,9 @@ function TopActionPanel({
   scopeLabel: "selected" | "total";
   onClose: () => void;
   onExport: (format: DirectExportFormat, exportName: string) => void;
-  onExportSkf: (exportName: string, historyLimit: SkfHistoryLimit) => void;
+  onExportSkf: (exportName: string, historyLimit: SkfHistoryLimit, target?: SkfExportTarget) => void;
   onExportStep: (exportName: string) => void;
+  sharedProjectsEnabled: boolean;
   skfExporting: boolean;
   stepExporting: boolean;
   onImportFiles: (files: FileList | File[]) => void;
@@ -9099,6 +9208,17 @@ function TopActionPanel({
 
           <footer className="export-dialog-footer">
             <div>
+              {exportFormat === "skf" && sharedProjectsEnabled ? (
+                <button
+                  className="export-shared-button"
+                  type="button"
+                  onClick={() => onExportSkf(exportName, skfHistoryLimit, "shared")}
+                  disabled={skfExporting || stepExporting}
+                >
+                  <CloudUpload />
+                  <span>Save to shared</span>
+                </button>
+              ) : null}
               <button className="export-primary-button" onClick={runSelectedExport} disabled={(shapeCount === 0 && exportFormat !== "skf") || stepExporting || skfExporting}>
                 <Download />
                 {exportFormat === "skf" ? (skfExporting ? "Saving project…" : "Save SketchForge Project") : null}

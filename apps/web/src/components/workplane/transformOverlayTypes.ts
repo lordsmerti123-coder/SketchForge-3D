@@ -88,6 +88,7 @@ export type TransformOverlayProps = {
   hideDimensionMarks: boolean;
   rotationWheelAxis: RotationAxis;
   pinnedRotationWheelView: PinnedRotationWheelView | null;
+  onBeginCameraDrag: (event: ReactPointerEvent<Element>) => void;
   onBeginTransform: (kind: TransformHandleKind, handleKey: string, event: ReactPointerEvent<Element>) => void;
   onMoveTransform: (clientX: number, clientY: number, shiftKey?: boolean, altKey?: boolean) => boolean;
   onFinishTransform: (event: ReactPointerEvent<Element>) => void;

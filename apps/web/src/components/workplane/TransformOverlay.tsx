@@ -32,6 +32,7 @@ export function TransformOverlay({
   hideDimensionMarks,
   rotationWheelAxis,
   pinnedRotationWheelView,
+  onBeginCameraDrag,
   onBeginTransform,
   onMoveTransform,
   onFinishTransform,
@@ -75,10 +76,22 @@ export function TransformOverlay({
   const plane = pinnedWheel?.plane ?? box.rotationPlanes[rotationWheelAxis];
   const wheel = pinnedWheel?.wheel ?? box.rotationWheels[rotationWheelAxis] ?? box.rotationWheel;
   return (
-    <div className={`transform-overlay ${hideSelectionChrome ? "hide-selection-chrome" : ""}`} aria-hidden="true">
+    <div
+      className={`transform-overlay ${hideSelectionChrome ? "hide-selection-chrome" : ""}`}
+      onPointerDownCapture={(event) => {
+        if (event.button === 2) {
+          onBeginCameraDrag(event);
+        }
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
       {showRotationWheel && wheel && plane ? (
         <svg
           className={`rotation-protractor-plane axis-${rotationWheelAxis}`}
+          aria-hidden="true"
           viewBox={`0 0 ${box.width} ${box.height}`}
           preserveAspectRatio="none"
           onPointerDown={(event) => onBeginTransform("rotate", `rotate-wheel-${rotationWheelAxis}`, event)}
@@ -107,7 +120,7 @@ export function TransformOverlay({
           </g>
         </svg>
       ) : null}
-      <svg className="transform-guides" viewBox={`0 0 ${box.width} ${box.height}`} preserveAspectRatio="none">
+      <svg className="transform-guides" viewBox={`0 0 ${box.width} ${box.height}`} preserveAspectRatio="none" aria-hidden="true">
         <defs>
           <marker id="dimension-arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto" markerUnits="strokeWidth">
             <path d="M0 4 L8 0 L5.2 4 L8 8 Z" />

@@ -4,6 +4,13 @@ export const CAD_MODIFIER_MAX_SHARP_ANGLE = 90;
 
 export type CadModifierRequestPhase = "prepare" | "preview";
 
+export function isCadModifierWasmMemoryFault(message: string, errorName = "") {
+  return (
+    /memory access out of bounds|out of bounds memory access|\bwasm\b|\babort(?:ed)?\b/i.test(message) ||
+    /^(?:WebAssembly\.)?RuntimeError$/i.test(errorName)
+  );
+}
+
 export function edgeModifierSelectionStatus(prepared: boolean, selectedCount: number, availableCount: number) {
   return prepared ? `${selectedCount} of ${availableCount} sharp edges selected` : "Preparing edges\u2026";
 }

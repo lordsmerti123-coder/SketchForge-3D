@@ -5,6 +5,7 @@ import {
   cleanNearZero,
   cleanRotationDegrees,
   fallbackSolidColor,
+  meshYawDegrees,
   mirroredAxisCount,
   mirrorSign,
   normalizeDegrees,
@@ -48,6 +49,17 @@ describe("workplane shape helpers", () => {
     expect(cleanRotationDegrees(-0.2)).toBe(0);
     expect(cleanRotationDegrees(359.8)).toBe(0);
     expect(cleanRotationDegrees(12.34)).toBe(12.3);
+  });
+
+  it("preserves the meaningful yaw of low-sided circular primitives", () => {
+    const triangularPrism = shape({ kind: "cylinder", width: 10, depth: 10, sides: 3 });
+
+    expect(meshYawDegrees({ ...triangularPrism, rotation: 30 })).toBeCloseTo(30);
+    expect(meshYawDegrees({ ...triangularPrism, rotation: 150 })).toBeCloseTo(30);
+    expect(meshYawDegrees({ ...triangularPrism, rotation: 90 })).toBeCloseTo(-30);
+    expect(meshYawDegrees({ ...triangularPrism, width: 12, rotation: 150 })).toBe(150);
+    expect(meshYawDegrees({ ...triangularPrism, kind: "box", rotation: 30 })).toBe(30);
+    expect(meshYawDegrees({ ...triangularPrism, sides: 96, rotation: 90 })).toBe(0);
   });
 
   it("cleans near-zero values and derives dimensions", () => {

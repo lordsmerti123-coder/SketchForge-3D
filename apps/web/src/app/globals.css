@@ -328,6 +328,39 @@ button {
   font-size: 13px;
 }
 
+.shared-projects-refresh {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  color: #31536a;
+  font-size: 12px;
+  font-weight: 800;
+  background: #fff;
+  border: 1px solid #d3e0e7;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.shared-projects-refresh:hover:not(:disabled) {
+  color: #087f9f;
+  border-color: #89d0e1;
+}
+
+.shared-projects-refresh:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.shared-projects-refresh .spinning {
+  animation: shared-project-spin 850ms linear infinite;
+}
+
+@keyframes shared-project-spin {
+  to { transform: rotate(360deg); }
+}
+
 .dashboard-controls {
   display: flex;
   flex-wrap: wrap;
@@ -401,6 +434,23 @@ button {
   border-radius: 8px;
   text-align: left;
   box-shadow: 0 1px 2px rgba(31, 52, 71, 0.05);
+}
+
+.shared-project-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  padding: 4px 7px;
+  color: #087f9f;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  pointer-events: none;
+  background: rgba(237, 251, 255, 0.94);
+  border: 1px solid #a9dfeb;
+  border-radius: 999px;
 }
 
 .project-list .project-card {
@@ -2370,6 +2420,29 @@ button {
   box-shadow: 0 5px 14px rgba(4, 145, 183, 0.22);
 }
 
+.export-dialog-footer .export-shared-button {
+  min-width: 122px;
+  color: #087f9f;
+  background: #eefafd;
+  border: 1px solid #a9dce9;
+}
+
+.export-dialog-footer .export-shared-button:hover:not(:disabled) {
+  color: #056c87;
+  background: #e2f7fc;
+  border-color: #6dc7dc;
+}
+
+.export-dialog-footer .export-shared-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.export-shared-button svg {
+  width: 16px;
+  height: 16px;
+}
+
 .export-dialog-footer .export-primary-button:hover:not(:disabled) {
   background: linear-gradient(180deg, #0eadd4, #058db2);
 }
@@ -3632,7 +3705,7 @@ button {
   text-align: center;
   pointer-events: auto;
   cursor: text;
-  transform: translate3d(var(--overlay-x, 0), var(--overlay-y, 0), 0) translate(-50%, -50%);
+  transform: translate3d(var(--overlay-x, 0), var(--overlay-y, 0), 0) translate(-50%, -50%) rotate(var(--rotate-handle-angle, 0deg));
   will-change: transform;
   box-shadow: 0 1px 4px rgba(20, 42, 58, 0.09);
 }
@@ -3791,7 +3864,7 @@ button {
   box-shadow: none;
   cursor: grab;
   opacity: 1;
-  transform: translate3d(var(--overlay-x, 0), var(--overlay-y, 0), 0) translate(-50%, -50%) rotate(var(--rotate-handle-angle, 0deg));
+  transform: translate3d(var(--overlay-x, 0), var(--overlay-y, 0), 0) translate(-50%, -50%);
 }
 
 .rotate-handle:hover {
@@ -3892,6 +3965,12 @@ button {
   box-shadow: -2px 0 10px rgba(36, 61, 86, 0.08);
 }
 
+.shape-inspector.minimized {
+  bottom: auto;
+  height: 50px;
+  overflow: hidden;
+}
+
 .shape-inspector-header {
   display: flex;
   align-items: center;
@@ -3978,7 +4057,7 @@ button {
   display: block;
   width: 64px;
   height: 64px;
-  border-radius: 999px;
+  border-radius: 10px;
 }
 
 .large-solid-swatch {

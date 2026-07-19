@@ -6,6 +6,7 @@ import { canonicalizeShape } from "@/lib/workplaneShapes";
 import {
   exportSkfProject,
   importSkfProject,
+  inspectSkfProjectPackage,
   SKF_FORMAT_VERSION,
   SKF_SCHEMA_ID,
   type SkfProjectDocumentV1,
@@ -96,6 +97,7 @@ describe("SketchForge .skf project packages", () => {
 
     const exported = await exportSkfProject(input(shapes));
     const { document } = packageDocument(exported);
+    const summary = await inspectSkfProjectPackage(exported);
     const restored = await importSkfProject(exported);
 
     expect(restored.projectName).toBe("Round trip");
@@ -104,6 +106,12 @@ describe("SketchForge .skf project packages", () => {
     expect(restored.workspace).toEqual(DEFAULT_WORKPLANE_WORKSPACE);
     expect(restored.snapGrid).toBe(DEFAULT_SNAP_GRID);
     expect(restored.placementElevation).toBe(12.5);
+    expect(summary).toEqual({
+      projectName: "Round trip",
+      createdAt: 1_700_000_000_000,
+      modifiedAt: 1_700_000_100_000,
+      formatVersion: SKF_FORMAT_VERSION,
+    });
     expect(document.assets.filter((entry) => entry.kind === "derived-mesh")).toHaveLength(0);
   });
 

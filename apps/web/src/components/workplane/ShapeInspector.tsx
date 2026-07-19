@@ -200,7 +200,6 @@ export function ShapeInspector({
   snapOpen,
   workspace,
   onUpdate,
-  onClose,
   onSnapChange,
   onSnapOpenChange,
   onEditSketch,
@@ -213,7 +212,6 @@ export function ShapeInspector({
   snapOpen: boolean;
   workspace: WorkplaneWorkspaceSettings;
   onUpdate: ShapeInspectorUpdate;
-  onClose: () => void;
   onSnapChange: Dispatch<SetStateAction<GridSize>>;
   onSnapOpenChange: Dispatch<SetStateAction<boolean>>;
   onEditSketch?: () => void;
@@ -226,14 +224,20 @@ export function ShapeInspector({
   const properties = getShapeProperties(shape, onUpdate);
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [colorOpen, setColorOpen] = useState(false);
+  const [minimized, setMinimized] = useState(false);
 
   useEffect(() => () => onInteractionActiveChange?.(false), [onInteractionActiveChange]);
 
   return (
-    <aside className="shape-inspector" aria-label={`${shape.name} shape settings`} onPointerDown={(event) => event.stopPropagation()}>
+    <aside className={`shape-inspector ${minimized ? "minimized" : ""}`} aria-label={`${shape.name} shape settings`} onPointerDown={(event) => event.stopPropagation()}>
       <div className="shape-inspector-header">
-        <button className="inspector-header-icon" aria-label="Close shape settings" onClick={onClose}>
-          <ChevronUp size={26} strokeWidth={2.8} />
+        <button
+          className="inspector-header-icon"
+          aria-label={minimized ? "Expand shape settings" : "Minimize shape settings"}
+          aria-expanded={!minimized}
+          onClick={() => setMinimized((current) => !current)}
+        >
+          {minimized ? <ChevronDown size={26} strokeWidth={2.8} /> : <ChevronUp size={26} strokeWidth={2.8} />}
         </button>
         <strong>{shape.name}</strong>
         <div className="inspector-header-actions">
@@ -246,6 +250,8 @@ export function ShapeInspector({
         </div>
       </div>
 
+      {!minimized ? (
+        <>
       <div className="shape-state-card" role="group" aria-label="Shape mode">
         <button
           className={!shape.hole ? "active solid-choice" : "solid-choice"}
@@ -356,6 +362,8 @@ export function ShapeInspector({
       <div className="inspector-snap-dock">
         <SnapGridControl snap={snap} snapOpen={snapOpen} onSnapChange={onSnapChange} onSnapOpenChange={onSnapOpenChange} />
       </div>
+        </>
+      ) : null}
     </aside>
   );
 }

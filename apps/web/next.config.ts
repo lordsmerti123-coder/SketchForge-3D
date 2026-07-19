@@ -1,12 +1,15 @@
 import type { NextConfig } from "next";
+import path from "node:path";
 
 const isStaticExport = process.env.STATIC_EXPORT === "true";
+const isDockerBuild = process.env.SKETCHFORGE_DOCKER_BUILD === "true";
 const extraAllowedDevOrigins = (process.env.SKETCHFORGE_ALLOWED_DEV_ORIGINS ?? "")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
 const nextConfig: NextConfig = {
+  outputFileTracingRoot: path.resolve(process.cwd()),
   devIndicators: false,
   // Keep the live development compiler isolated from `next build`. Sharing
   // `.next` lets a production verification build invalidate chunks used by a
@@ -35,7 +38,9 @@ const nextConfig: NextConfig = {
         output: "export" as const,
         trailingSlash: true,
       }
-    : {}),
+    : isDockerBuild
+      ? { output: "standalone" as const }
+      : {}),
 };
 
 export default nextConfig;

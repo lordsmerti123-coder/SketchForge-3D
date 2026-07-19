@@ -2,7 +2,7 @@
 
 import { OcctKernel, type ShapeHandle } from "occt-wasm";
 import type { CadModifierComponentMesh, CadModifierDisplayEdge, CadModifierEdge, CadModifierMeshPart, CadModifierPrimitivePart, CadModifierQuality, CadModifierWorkerRequest, CadModifierWorkerResponse } from "@/lib/cadModifierTypes";
-import { CAD_MODIFIER_RUNTIME_BASE } from "@/lib/cadModifierRuntime";
+import { CAD_MODIFIER_RUNTIME_BASE, isCadModifierWasmMemoryFault } from "@/lib/cadModifierRuntime";
 
 const HASH_UPPER_BOUND = 2_147_483_647;
 const CAD_EDGE_WIREFRAME_DEFLECTION = 0.035;
@@ -381,10 +381,6 @@ function copyCadMesh(mesh: { positions: Float32Array; normals: Float32Array; ind
   };
 }
 
-function isWasmMemoryFault(message: string) {
-  return /memory access out of bounds|WebAssembly\.RuntimeError|wasm|abort/i.test(message);
-}
-
 function isImportStlWasmFault(message: string) {
   return /importStl:.*WebAssembly\.Exception/i.test(message);
 }
@@ -492,7 +488,8 @@ self.onmessage = async (event: MessageEvent<CadModifierWorkerRequest>) => {
     }
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error ?? "");
-    if (isWasmMemoryFault(rawMessage) || isImportStlWasmFault(rawMessage) || isMissingValidatorFault(rawMessage)) {
+    const errorName = error instanceof Error ? error.name : "";
+    if (isCadModifierWasmMemoryFault(rawMessage, errorName) || isImportStlWasmFault(rawMessage) || isMissingValidatorFault(rawMessage)) {
       if (cad) releaseSession(cad);
       kernelPromise = null;
       const message = isImportStlWasmFault(rawMessage)

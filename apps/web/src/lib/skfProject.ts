@@ -152,6 +152,13 @@ export type SkfRestoredProject = {
   migratedFromVersion?: number;
 };
 
+export type SkfProjectPackageSummary = {
+  projectName: string;
+  createdAt: number;
+  modifiedAt: number;
+  formatVersion: number;
+};
+
 export type SkfSourceImporter = (asset: ProjectAsset) => Promise<NonNullable<WorkplaneShape["importedMesh"]>>;
 
 export type ImportSkfOptions = {
@@ -1102,9 +1109,44 @@ function validateLegacyRuntimeShape(shape: WorkplaneShape, label: string) {
   if (cadBrep !== undefined && typeof cadBrep !== "string") throw new Error(`${label}.cadBrep is invalid`);
 }
 
-export async function importSkfProject(input: ArrayBuffer | Uint8Array, options: ImportSkfOptions = {}): Promise<SkfRestoredProject> {
+function skfInputBytes(input: ArrayBuffer | Uint8Array) {
   const bytes = input instanceof Uint8Array ? new Uint8Array(input) : new Uint8Array(input.slice(0));
   if (!bytes.byteLength) throw new Error(".skf file is empty");
+  return bytes;
+}
+
+async function readPackagedSkf(bytes: Uint8Array) {
+  inspectZipBeforeExpansion(bytes);
+  let files: ArchiveFiles;
+  try {
+    files = await unzipAsync(bytes);
+  } catch (error) {
+    throw new Error(`Could not expand .skf package: ${error instanceof Error ? error.message : "corrupt ZIP data"}`);
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(strFromU8(files["project.json"]));
+  } catch {
+    throw new Error("project.json is malformed");
+  }
+  return { files, validated: await validateDocumentAndAssets(raw, files) };
+}
+
+export async function inspectSkfProjectPackage(input: ArrayBuffer | Uint8Array): Promise<SkfProjectPackageSummary> {
+  const bytes = skfInputBytes(input);
+  const prefix = strFromU8(bytes.subarray(0, Math.min(bytes.length, 64))).trimStart();
+  if (prefix.startsWith("{")) throw new Error("Shared storage accepts packaged .skf files, not legacy JSON projects");
+  const { validated } = await readPackagedSkf(bytes);
+  return {
+    projectName: validated.document.metadata.projectName,
+    createdAt: Date.parse(validated.document.metadata.createdAt),
+    modifiedAt: Date.parse(validated.document.metadata.modifiedAt),
+    formatVersion: validated.document.formatVersion,
+  };
+}
+
+export async function importSkfProject(input: ArrayBuffer | Uint8Array, options: ImportSkfOptions = {}): Promise<SkfRestoredProject> {
+  const bytes = skfInputBytes(input);
   const prefix = strFromU8(bytes.subarray(0, Math.min(bytes.length, 64))).trimStart();
   if (prefix.startsWith("{")) {
     if (bytes.byteLength > SKF_LIMITS.projectJsonBytes) throw new Error("Legacy .skf JSON exceeds the supported size limit");
@@ -1123,19 +1165,6 @@ export async function importSkfProject(input: ArrayBuffer | Uint8Array, options:
     throw new Error("This legacy .skf version is not supported");
   }
 
-  inspectZipBeforeExpansion(bytes);
-  let files: ArchiveFiles;
-  try {
-    files = await unzipAsync(bytes);
-  } catch (error) {
-    throw new Error(`Could not expand .skf package: ${error instanceof Error ? error.message : "corrupt ZIP data"}`);
-  }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(strFromU8(files["project.json"]));
-  } catch {
-    throw new Error("project.json is malformed");
-  }
-  const validated = await validateDocumentAndAssets(raw, files);
+  const { files, validated } = await readPackagedSkf(bytes);
   return restoreV1(validated.document, validated.assetById, validated.stateById, files, options);
 }

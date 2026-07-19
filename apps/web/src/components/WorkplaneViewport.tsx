@@ -1271,7 +1271,6 @@ const ROTATION_HANDLE_SIDE_HYSTERESIS = 0.22;
 const ROTATION_HANDLE_DOMINANCE_HYSTERESIS = 0.18;
 const ROTATION_UPPER_HANDLE_ICON_ANGLE = 0;
 const ROTATION_BOTTOM_HANDLE_ICON_ANGLE = 0;
-
 function signedRotationSide(value: number, previous: RotationHandleSide | undefined, positiveSide: RotationHandleSide, negativeSide: RotationHandleSide) {
   if (previous === positiveSide && value > -ROTATION_HANDLE_SIDE_HYSTERESIS) {
     return previous;
@@ -2477,6 +2476,44 @@ export function WorkplaneViewport({
     [onInteractionActiveChange, rememberResizeAnchor, toRawPlanePoint],
   );
 
+  const beginCameraDragFromOverlay = useCallback((event: ReactPointerEvent<Element>) => {
+    if (event.button !== 2) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const state = threeRef.current;
+    const canvas = state?.renderer.domElement;
+    const PointerEventConstructor = canvas?.ownerDocument.defaultView?.PointerEvent;
+    if (!canvas || !PointerEventConstructor) {
+      return;
+    }
+
+    const source = event.nativeEvent;
+    canvas.dispatchEvent(
+      new PointerEventConstructor("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        pointerId: source.pointerId,
+        pointerType: source.pointerType,
+        isPrimary: source.isPrimary,
+        button: source.button,
+        buttons: source.buttons,
+        clientX: source.clientX,
+        clientY: source.clientY,
+        screenX: source.screenX,
+        screenY: source.screenY,
+        ctrlKey: source.ctrlKey,
+        shiftKey: source.shiftKey,
+        altKey: source.altKey,
+        metaKey: source.metaKey,
+      }),
+    );
+  }, []);
+
   const updateTransform = useCallback(
     (clientX: number, clientY: number, shiftKey = false, altKey = false) => {
       const transform = transformRef.current;
@@ -3634,6 +3671,7 @@ export function WorkplaneViewport({
               hideDimensionMarks={activeTransformKind === "scale"}
               rotationWheelAxis={rotationWheelAxis}
               pinnedRotationWheelView={pinnedRotationWheelView}
+              onBeginCameraDrag={beginCameraDragFromOverlay}
               onBeginTransform={beginTransform}
               onMoveTransform={updateTransform}
               onFinishTransform={finishTransform}
@@ -3675,7 +3713,6 @@ export function WorkplaneViewport({
           snapOpen={snapOpen}
           workspace={workspace}
           onUpdate={(patch, options) => onUpdateShape(selectedShape.id, patchWithResizeAnchor(selectedShape, patch, options?.resizeAxis, lastResizeAnchorRef.current))}
-          onClose={() => onSelectShape(null)}
           onSnapChange={setSnap}
           onSnapOpenChange={setSnapOpen}
           onEditSketch={selectedShape.sketchProfile ? onEditSketch : undefined}

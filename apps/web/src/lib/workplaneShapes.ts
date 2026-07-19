@@ -29,6 +29,23 @@ export function shapeDepth(shape: WorkplaneShape) {
   return shape.depth ?? shape.size;
 }
 
+export function meshYawDegrees(shape: WorkplaneShape) {
+  const isRoundPrimitive = !shape.importedMesh && (shape.kind === "cylinder" || shape.kind === "cone");
+  const isCircular = Math.abs(shapeWidth(shape) - shapeDepth(shape)) < 0.0005;
+  if (!isRoundPrimitive || !isCircular) {
+    return shape.rotation;
+  }
+
+  // A tessellated circular primitive is only invariant by one whole side step.
+  // Preserve the remaining yaw so low-sided cylinders (for example a triangular
+  // prism) are baked and used in booleans at the same angle shown in the viewport.
+  const sides = Math.max(3, Math.round(shape.sides ?? 96));
+  const sideStep = 360 / sides;
+  const normalized = normalizeDegrees(shape.rotation);
+  const equivalentYaw = normalized - Math.round(normalized / sideStep) * sideStep;
+  return Math.abs(equivalentYaw) < 1e-9 ? 0 : equivalentYaw;
+}
+
 function edgeTreatmentPreserveZone(shape: WorkplaneShape): number {
   const own = Math.max(...(shape.edgeTreatments ?? []).map((feature) => feature.amount), 0);
   const child = Math.max(...(shape.groupedShapes ?? []).map(edgeTreatmentPreserveZone), 0);
