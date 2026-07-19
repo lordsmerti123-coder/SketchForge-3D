@@ -16,16 +16,14 @@
 
   <p>
     <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
-    <a href="https://github.com/Formsmith746/SketchForge-3D/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Formsmith746/SketchForge-3D?style=social"></a>
-    <a href="https://github.com/sponsors/Formsmith746"><img alt="GitHub Sponsors" src="https://img.shields.io/github/sponsors/Formsmith746?label=sponsor&logo=githubsponsors&color=bf3989"></a>
+    <a href="https://github.com/Formsmith746/SketchForge-3D/stargazers"><img alt="Star SketchForge on GitHub" src="docs/media/badges/github-star.svg"></a>
+    <a href="https://github.com/sponsors/Formsmith746"><img alt="Sponsor SketchForge on GitHub" src="docs/media/badges/github-sponsor.svg"></a>
     <img alt="Local first" src="https://img.shields.io/badge/local--first-no%20account-0ea5e9">
-    <img alt="Version 0.6.0" src="https://img.shields.io/badge/version-0.6.0-2563eb">
+    <img alt="Version 0.6.5" src="https://img.shields.io/badge/version-0.6.5-2563eb">
   </p>
 </div>
 
-SketchForge projects can be saved as native editable `.skf` packages and opened later on another browser or device. Unlike STL/OBJ mesh exports, `.skf` preserves shapes, sketches, groups and boolean operands, exact CAD data where available, imported sources, workspace settings, and undo/redo history. See [the `.skf` project format documentation](docs/SKF_PROJECT_FORMAT.md).
-
-![SketchForge editor showing a selected box on the workplane](docs/media/sketchforge-editor-v0.6.png)
+![SketchForge editor showing a selected box on the workplane](docs/media/sketchforge-editor-v0.6.5.png)
 
 ## Why SketchForge
 
