@@ -1298,7 +1298,7 @@ function Dashboard({
               disabled={staticExportBuild || downloadMode !== "folder"}
               value={downloadFolder}
               onChange={(event) => onDownloadFolderChange(event.currentTarget.value)}
-              placeholder="C:\\Users\\spiro\\Downloads"
+              placeholder="C:\\Users\\username\\Downloads"
             />
           </label>
         </section>
