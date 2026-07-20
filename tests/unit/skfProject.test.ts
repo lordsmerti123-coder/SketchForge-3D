@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { editorHistoryEntry } from "@/lib/editorHistory";
 import { projectAssetFromBytes } from "@/lib/projectAssets";
@@ -69,6 +69,8 @@ function mutateProject(bytes: Uint8Array, mutate: (document: SkfProjectDocumentV
 }
 
 describe("SketchForge .skf project packages", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("round-trips every supported native shape kind and editable properties", async () => {
     const nativeKinds: ShapeKind[] = [
       "box", "cylinder", "sphere", "sketch", "scribble", "cone", "pyramid", "roof", "text", "roundRoof",
@@ -192,6 +194,30 @@ describe("SketchForge .skf project packages", () => {
     expect(restored.assets).toHaveLength(1);
     expect(restored.shapes[0].importedMesh?.assetId).toBe(restored.shapes[1].importedMesh?.assetId);
     expect(importCalls).toBe(1);
+  });
+
+  it("exports and imports source-backed projects without Web Crypto", async () => {
+    const sourceBytes = strToU8("solid http source");
+    const asset = await projectAssetFromBytes("http.stl", "stl", sourceBytes);
+    const importedMesh: NonNullable<WorkplaneShape["importedMesh"]> = {
+      positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      baseWidth: 1,
+      baseDepth: 1,
+      baseHeight: 1,
+      triangleCount: 1,
+      sourceFormat: "stl",
+      assetId: asset.id,
+    };
+    vi.stubGlobal("crypto", {});
+
+    const exported = await exportSkfProject(input([shape("mesh", "http-object", { importedMesh })], { assets: [asset] }));
+    const restored = await importSkfProject(exported, {
+      sourceImporter: async () => ({ ...importedMesh, assetId: undefined }),
+    });
+
+    expect(packageDocument(exported).document.assets[0].sha256).toBe(asset.sha256);
+    expect(restored.assets[0].sha256).toBe(asset.sha256);
+    expect(restored.shapes[0].importedMesh?.assetId).toBe(restored.assets[0].id);
   });
 
   it.each(["svg", "step"] as const)("stores and restores original %s sources", async (sourceFormat) => {
