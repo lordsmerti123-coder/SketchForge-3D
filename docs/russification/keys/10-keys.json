@@ -1,0 +1,24 @@
+{
+  "editor": {
+    "intersectionNeedSolidAndHole": {
+      "en": "Select at least one solid and one hole for Intersection",
+      "ru": "Выберите хотя бы один сплошной объект и одно отверстие для пересечения"
+    },
+    "intersectionFailed": {
+      "en": "Could not calculate this Intersection cleanly",
+      "ru": "Не удалось корректно рассчитать это пересечение"
+    },
+    "cutImportedFailed": {
+      "en": "Could not cut this imported mesh cleanly",
+      "ru": "Не удалось корректно вырезать импортированную сетку"
+    },
+    "cutSelectionFailed": {
+      "en": "Could not cut this selection",
+      "ru": "Не удалось вырезать это выделение"
+    },
+    "groupSelectionFailed": {
+      "en": "Could not group this selection",
+      "ru": "Не удалось сгруппировать это выделение"
+    }
+  }
+}

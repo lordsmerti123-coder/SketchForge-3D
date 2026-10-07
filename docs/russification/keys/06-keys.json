@@ -1,0 +1,86 @@
+{
+  "editor": {
+    "exportObj": {
+      "en": "Export as OBJ",
+      "ru": "Экспорт в OBJ"
+    },
+    "exportObjDesc": {
+      "en": "Universal 3D mesh",
+      "ru": "Универсальный 3D-меш"
+    },
+    "exportObjNote": {
+      "en": "A broadly compatible mesh format for modeling, rendering, and interchange.",
+      "ru": "Широкосовместимый формат меша для моделирования, рендеринга и обмена."
+    },
+    "exportSkf": {
+      "en": "Export as SKF",
+      "ru": "Экспорт в SKF"
+    },
+    "exportSkfDesc": {
+      "en": "Full project",
+      "ru": "Полный проект"
+    },
+    "exportSkfNote": {
+      "en": "Saves the complete project with all shapes, settings, and history.",
+      "ru": "Сохраняет полный проект со всеми формами, настройками и историей."
+    },
+    "exportStep": {
+      "en": "Export as STEP",
+      "ru": "Экспорт в STEP"
+    },
+    "exportStepDesc": {
+      "en": "CAD / B-Rep",
+      "ru": "CAD / B-Rep"
+    },
+    "exportStepNote": {
+      "en": "Keeps supported boxes, cylinders, spheres, and cones as precise CAD geometry.",
+      "ru": "Сохраняет поддерживаемые коробки, цилиндры, сферы и конусы как точную CAD-геометрию."
+    },
+    "exportStl": {
+      "en": "Export as STL",
+      "ru": "Экспорт в STL"
+    },
+    "exportStlDesc": {
+      "en": "3D print mesh",
+      "ru": "Меш для 3D-печати"
+    },
+    "exportStlNote": {
+      "en": "Best for slicers and 3D printing. Geometry is exported as a triangulated mesh.",
+      "ru": "Лучше всего подходит для слайсеров и 3D-печати. Геометрия экспортируется как триангулированный меш."
+    },
+    "exportSvg": {
+      "en": "Export as SVG",
+      "ru": "Экспорт в SVG"
+    },
+    "exportSvgDesc": {
+      "en": "Top-view vector",
+      "ru": "Вектор вида сверху"
+    },
+    "exportSvgNote": {
+      "en": "Exports a clean top-view silhouette in millimeters, including holes and curved contours.",
+      "ru": "Экортирует чистый силуэт вида сверху в миллиметрах, включая отверстия и изогнутые контуры."
+    }
+  },
+  "importExport": {
+    "obj": {
+      "en": "OBJ",
+      "ru": "OBJ"
+    },
+    "skf": {
+      "en": "SKF",
+      "ru": "SKF"
+    },
+    "step": {
+      "en": "STEP",
+      "ru": "STEP"
+    },
+    "stl": {
+      "en": "STL",
+      "ru": "STL"
+    },
+    "svg": {
+      "en": "SVG",
+      "ru": "SVG"
+    }
+  }
+}

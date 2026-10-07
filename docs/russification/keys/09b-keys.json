@@ -1,0 +1,38 @@
+{
+  "editor": {
+    "noSharpEdgesAtThreshold": { "en": "No sharp manifold edges were found at this threshold", "ru": "Острые рёбра не найдены при этом пороге" },
+    "editingRevolveProfile": { "en": "Editing revolve sketch profile", "ru": "Редактирование профиля вращения" },
+    "editingExtrudeProfile": { "en": "Editing extrude sketch profile", "ru": "Редактирование профиля выдавливания" },
+    "revolveStarted": { "en": "Revolve sketch started: draw on the left side of the axis", "ru": "Начато вращение: рисуйте слева от оси" },
+    "sketchStarted": { "en": "Sketch started: place the first point", "ru": "Скетч начат: поставьте первую точку" },
+    "profileClosed": { "en": "Profile closed—edit the path or finish the sketch", "ru": "Профиль замкнут — отредактируйте путь или завершите скетч" },
+    "sketchSegmentAdded": { "en": "Sketch segment added", "ru": "Сегмент скетча добавлен" },
+    "sketchPointAndSegmentAdded": { "en": "Sketch point and segment added", "ru": "Точка и сегмент скетча добавлены" },
+    "sketchPointAdded": { "en": "Sketch point added", "ru": "Точка скетча добавлена" },
+    "itemAddedToSketch": { "en": "{label} added to sketch", "ru": "{label} добавлено в скетч" },
+    "sketchPointRemoved": { "en": "Sketch point removed", "ru": "Точка скетча удалена" },
+    "sketchLineRemoved": { "en": "Sketch line removed", "ru": "Линия скетча удалена" },
+    "selectedGeometryRemoved": { "en": "Selected sketch geometry removed", "ru": "Выбранная геометрия скетча удалена" },
+    "sketchPointMoved": { "en": "Sketch point moved", "ru": "Точка скетча перемещена" },
+    "sketchGeometryTransformed": { "en": "Sketch geometry transformed", "ru": "Геометрия скетча преобразована" },
+    "rotatedClosedSketchSelection": { "en": "Rotated closed sketch selection by 45°", "ru": "Замкнутый выделенный скетч повёрнут на 45°" },
+    "curveHandleAdjusted": { "en": "Curve handle adjusted", "ru": "Ручка кривой скорректирована" },
+    "pointAddedToPath": { "en": "Point added to path", "ru": "Точка добавлена на путь" },
+    "profileCannotRevolve": { "en": "The sketch profile cannot be revolved to 3D", "ru": "Профиль скетча не удаётся повернуть в 3D" },
+    "profileCannotExtrude": { "en": "The sketch profile cannot be extruded to 3D", "ru": "Профиль скетча не удаётся выдавить в 3D" },
+    "sketchUpdated": { "en": "Sketch updated", "ru": "Скетч обновлён" },
+    "revolveSketchUpdated": { "en": "Revolve sketch updated", "ru": "Скетч вращения обновлён" },
+    "revolvedSketchCreated": { "en": "Revolved sketch created", "ru": "Скетч вращения создан" },
+    "exactSketchCreated": { "en": "Exact sketch created at 10 mm height", "ru": "Точный скетч создан (высота 10 мм)" },
+    "assetAdded": { "en": "{name} added", "ru": "{name} добавлен" },
+    "revolveUpdated": { "en": "Revolve updated", "ru": "Вращение обновлено" },
+    "revolveSettingsNotApplied": { "en": "The revolve settings could not be applied", "ru": "Не удалось применить настройки вращения" },
+    "workplaneToolHint": { "en": "Workplane tool: click a face or empty grid; hold Shift to reverse", "ru": "Инструмент рабочей плоскости: щёлкните по грани или пустой сетке; удерживайте Shift для инверсии" }
+  },
+  "sketchImage": {
+    "sketchImageUpdated": { "en": "Sketch image updated", "ru": "Изображение скетча обновлено" },
+    "sketchImageRemoved": { "en": "Sketch image removed", "ru": "Изображение скетча удалено" },
+    "addedImageToSketch": { "en": "Added {name} to the sketch", "ru": "Изображение {name} добавлено в скетч" },
+    "imageCouldNotBeAdded": { "en": "The sketch image could not be added", "ru": "Не удалось добавить изображение скетча" }
+  }
+}

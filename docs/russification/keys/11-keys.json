@@ -1,0 +1,10 @@
+{
+  "alignHandles": {
+    "front": { "en": "Front", "ru": "Спереди" },
+    "back": { "en": "Back", "ru": "Сзади" }
+  },
+  "editor": {
+    "alignTo": { "en": "Align {label}", "ru": "Выровнять: {label}" },
+    "alreadyAlignedTo": { "en": "Already aligned {label}", "ru": "Уже выровнено: {label}" }
+  }
+}

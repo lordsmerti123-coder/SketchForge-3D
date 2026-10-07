@@ -1,0 +1,28 @@
+{
+  "editor": {
+    "emptyResult": { "en": "The CAD kernel returned an empty edge treatment", "ru": "Ядро CAD вернуло пустую обработку грани" },
+    "needAdjustment": { "en": "Edge treatment needs adjustment", "ru": "Обработку грани необходимо настроить" },
+    "noEdgesMatch": { "en": "No sharp edges match this threshold", "ru": "Нет острых граней, соответствующих этому порогу" },
+    "previewReady": { "en": "Edge treatment preview ready", "ru": "Предпросмотр обработки грани готов" },
+    "removedShape": { "en": "Removed {name}", "ru": "Удалено: {name}" }
+  },
+  "align": {
+    "handles": { "en": "Alignment handles", "ru": "Рукоятки выравнивания" },
+    "mirrorHandles": { "en": "Mirror handles", "ru": "Рукоятки зеркального отражения" }
+  },
+  "tutorial": {
+    "requiredDimensions": { "en": "Required dimensions", "ru": "Требуемые размеры" }
+  },
+  "shapes": {
+    "customColor": { "en": "Custom color", "ru": "Пользовательский цвет" }
+  },
+  "challenges": {
+    "keyTagDark": { "en": "Finished red Key Tag model on the dark SketchForge workplane", "ru": "Готовая красная модель Key Tag на тёмной рабочей области SketchForge" },
+    "keyTagLight": { "en": "Finished red Key Tag model on the SketchForge workplane", "ru": "Готовая красная модель Key Tag на рабочей области SketchForge" },
+    "nameplateDark": { "en": "Finished blue ALEX nameplate on the dark SketchForge workplane", "ru": "Готовая синяя табличка ALEX на тёмной рабочей области SketchForge" },
+    "nameplateLight": { "en": "Finished blue ALEX nameplate on the SketchForge workplane", "ru": "Готовая синяя табличка ALEX на рабочей области SketchForge" }
+  },
+  "workspaceSettings": {
+    "appDefault": { "en": "App: {value}", "ru": "Приложение: {value}" }
+  }
+}
