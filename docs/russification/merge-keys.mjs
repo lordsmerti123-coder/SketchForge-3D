@@ -3,8 +3,11 @@
 // catalog format:   { "<namespace>": { "<key>": "..." } }
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
-const root = "D:\\scetch\\SketchForge-3D";
+// Корень проекта вычисляется от расположения скрипта:
+// docs/russification/merge-keys.mjs -> три уровня вверх.
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const keysDir = path.join(root, "docs", "russification", "keys");
 const enPath = path.join(root, "apps", "web", "src", "i18n", "messages", "en.json");
 const ruPath = path.join(root, "apps", "web", "src", "i18n", "messages", "ru.json");

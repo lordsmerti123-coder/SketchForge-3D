@@ -61,3 +61,12 @@ opencode.json
 
 # Журналы рабочих сессий: личные записи о состоянии машины
 docs/SESSION-*.md
+
+# Рабочие заметки для ИИ-агентов: файлы остаются на диске,
+# но в публичный форк не идут — это не документация проекта
+AGENTS.md
+BUILD-1.1-NOTES.md
+SETUP-NEW-MACHINE.md
+start-3d-agent.cmd
+open-qwen-agent.cmd
+run-dev.bat
